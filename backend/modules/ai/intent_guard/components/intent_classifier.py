@@ -2,7 +2,7 @@ import json
 from typing import Dict, Any
 from core import call_openai_safe
 
-def classify_intent(context: list[dict], model: str = "gemini-2.5-flash-lite") -> Dict[str, Any]:
+def classify_intent(context: list[dict]) -> Dict[str, Any]:
     """
     Determines authoritative intent and whether constraints are present in context.
     """
@@ -52,7 +52,6 @@ Now analyze:
 
     result = call_openai_safe(
         messages=[{"role": "user", "content": prompt}],
-        model=model,
         max_tokens=450,
         response_format="json",
         fallback_response={

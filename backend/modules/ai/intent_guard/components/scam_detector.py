@@ -2,7 +2,7 @@ from typing import Dict, Any
 from core import call_openai_safe
 
 
-def detect_scam(body: str, model="gemini-2.5-flash-lite") -> Dict[str, Any]:
+def detect_scam(body: str) -> Dict[str, Any]:
     prompt = f"""
     You are a travel agent AI assistant. Determine if this email is potentially a scam or if the prospect
     is disguised to push their own agenda. Look for suspicious links, contradictory requests, or unusual behavior.
@@ -39,7 +39,6 @@ def detect_scam(body: str, model="gemini-2.5-flash-lite") -> Dict[str, Any]:
     """
     result = call_openai_safe(
         messages=[{"role": "user", "content": prompt}],
-        model=model,
         max_tokens=300,
         response_format="json",
         fallback_response={

@@ -1,7 +1,7 @@
 from typing import Dict, Any
 from core import call_openai_safe
 
-def extract_constraints(body: str, model="gemini-2.5-flash-lite") -> Dict[str, Any]:
+def extract_constraints(body: str) -> Dict[str, Any]:
     prompt = f"""
     You are a travel agent AI assistant. Extract all travel-related constraints mentioned in the email.
     Focus on: dates, destination, budget, number of travelers, travel style, special requirements.
@@ -53,7 +53,6 @@ def extract_constraints(body: str, model="gemini-2.5-flash-lite") -> Dict[str, A
     """
     result = call_openai_safe(
         messages=[{"role": "user", "content": prompt}],
-        model=model,
         max_tokens=400,
         response_format="json",
         fallback_response={

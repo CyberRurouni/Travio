@@ -44,10 +44,8 @@ Message:
     try:
         logger.debug("🧠 Running INITIAL evaluation")
         
-        # CRITICAL FIX: Increase max_tokens to prevent truncation
         evaluation = call_openai_safe(
             messages=messages,
-            model="gemini-2.5-flash-lite",
             temperature=0.0,
             max_tokens=500,  
             response_format="json",

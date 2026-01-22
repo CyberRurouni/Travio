@@ -33,7 +33,6 @@ Data you can rely on:
 def generate_ai_response(
     chat_container: list,
     intent_guard_data: Dict[str, Any],
-    model: str = "gemini-2.5-flash-lite",
 ) -> Dict[str, Any]:
     """
     Generates the AI Travel Assistant response.
@@ -90,7 +89,6 @@ Output JSON ONLY:
 
     result = call_openai_safe(
         messages=[{"role": "user", "content": prompt}],
-        model=model,
         max_tokens=600,
         response_format="json",
         fallback_response={

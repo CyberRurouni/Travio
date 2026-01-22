@@ -3,9 +3,7 @@ from typing import Dict, Any
 from core import call_openai_safe
 
 
-def first_impression(
-    subject: str, body: str, model="gemini-2.5-flash-lite"
-) -> Dict[str, Any]:
+def first_impression(subject: str, body: str) -> Dict[str, Any]:
     """
     Produces a FIRST-IMPRESSION assessment of travel intent and behavior.
     Shallow scan only. Also flags whether constraints are visibly mentioned.
@@ -71,7 +69,6 @@ Body:
 
     result = call_openai_safe(
         messages=[{"role": "user", "content": prompt}],
-        model=model,
         max_tokens=450,
         response_format="json",
         fallback_response={

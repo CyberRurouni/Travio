@@ -50,12 +50,10 @@ New message:
     try:
         logger.debug("🔁 Running RE-EVALUATION")
 
-        # CRITICAL FIX: Increase max_tokens
         reevaluation = call_openai_safe(
             messages=messages,
-            model="gemini-2.5-flash",
             temperature=0.0,
-            max_tokens=500,  # Increased from 300
+            max_tokens=500, 
             response_format="json",
             fallback_response=fallback,
         )

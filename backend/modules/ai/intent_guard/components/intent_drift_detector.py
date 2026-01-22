@@ -2,7 +2,7 @@ import json
 from typing import Dict, Any
 from core import call_openai_safe
 
-def detect_intent_drift(body: str, previous_intent: str, model="gemini-2.5-flash-lite") -> Dict[str, Any]:
+def detect_intent_drift(body: str, previous_intent: str) -> Dict[str, Any]:
     prompt = f"""
 You are a travel agent AI assistant.
 
@@ -35,7 +35,6 @@ Email body:
 
     result = call_openai_safe(
         messages=[{"role": "user", "content": prompt}],
-        model=model,
         max_tokens=350,
         response_format="json",
         fallback_response={

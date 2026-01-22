@@ -11,11 +11,11 @@ class Session:
     TOTAL_WORDS_THRESHOLD = 350
 
     def __init__(
-        self, agency_id: str, prospect_id: str, session_id: Optional[UUID] = None
+        self, agency_id: str, prospect_id: str
     ):
         self.agency_id = agency_id
         self.prospect_id = prospect_id
-        self.session_id: Optional[UUID] = session_id
+        self.session_id: UUID | None = None
         self._cached_first_impression: dict | None = None
 
     @classmethod

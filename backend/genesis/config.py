@@ -31,14 +31,14 @@ PASSWORD = os.getenv("PASSWORD") or ""
 IMAP_SERVER = "imap.gmail.com"  # Gmail IMAP server
 IDLE_TIMEOUT = 60 * 25  # 25 minutes; Gmail requires exiting IDLE periodically
 
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or ""
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or ""
 
 # ----------------------------
 # Initialization of OpenAI client
 # ----------------------------
 client = OpenAI(
-    api_key=GEMINI_API_KEY,
-    base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+    api_key=OPENROUTER_API_KEY,
+    base_url="https://openrouter.ai/api/v1",
 )
 
 # ----------------------------

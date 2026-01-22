@@ -25,7 +25,7 @@ def extract_first_json(text: str) -> Optional[str]:
 
 def call_openai(
     messages,
-    model="gemini-2.5-flash",
+    model="google/gemini-2.5-flash",
     max_tokens=800,
     temperature=0.0,
     response_format: Literal["json", "text"] = "json",
@@ -124,7 +124,7 @@ def call_openai(
 
 def call_openai_safe(
     messages,
-    model="gemini-2.5-flash-lite",
+    model="google/gemini-2.5-flash-lite",
     max_tokens=800,
     temperature=0.0,
     response_format: Literal["json", "text"] = "json",
