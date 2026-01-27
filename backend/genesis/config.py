@@ -1,7 +1,6 @@
 import json
 import hashlib
 import os
-import uuid
 import time
 import imaplib  # Built-in IMAP library, fully compatible with Python 3.14
 import email  # Built-in library for parsing email messages
