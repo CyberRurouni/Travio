@@ -35,7 +35,10 @@ async def db_select(
                 if isinstance(value, (list, tuple, set)):
                     query = query.in_(field, list(value))
                 else:
-                    query = query.eq(field, value)
+                    if value is None:
+                        query = query.is_(field, None) # IS NULL
+                    else:
+                        query = query.eq(field, value)
 
         # ------------------------------
         # OR filters
@@ -453,3 +456,4 @@ async def db_rpc(
     except Exception as e:
         logger.exception(f"💥 RPC {function_name} failed: {e}")
         return {}
+

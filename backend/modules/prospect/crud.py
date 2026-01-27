@@ -55,19 +55,6 @@ async def register_prospect(
         return None
 
 
-async def is_registered_prospect(identifier_hash: str) -> bool:
-    """Checks if a prospect is already registered."""
-    filters = {
-        "identifier_hash": identifier_hash,
-    }
-    result = await db_select(table="contact_methods", filters=filters, fields="id")
-
-    if not isinstance(result, list) or not result:
-        return False
-
-    return True
-
-
 async def upsert_prospect_presence(
     prospect_id: UUID, channel_type: str, raw_identifier: str
 ):

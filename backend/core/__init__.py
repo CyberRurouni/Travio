@@ -15,10 +15,11 @@ from .utils.redis_utils import emails_broker, prospects_broker, session_broker
 from .utils.redis_utils import emails_stream
 from .utils.redis_utils import safe_redis_operation
 from .utils.ai_utils import call_openai_safe
-from .utils.async_instance_registry import InstanceRegistry
+from .utils.instance_registry import InstanceRegistry
+from .utils.general import generate_embedding, populate_new_embeddings
 
 # ---------- Services ----------
-
+from .services.crud import fetch_table_schema
 
 # ---------- DB --------------
 from .db.crud import (
@@ -43,7 +44,6 @@ from modules.ai.evaluation.re_eval import send_clarification_email
 from modules.ai.intent_guard.engine import TravelIntentGuard
 
 # Session
-from modules.session.crud import register_prospect, fetch_agency_id_by_email, is_registered_prospect
 from modules.prospect.prospect import HandleProspect
 from modules.session.session import Session
 

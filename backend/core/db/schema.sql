@@ -244,22 +244,23 @@ ON agencies (created_at);
 
 
 /* ---------- Agency Packages ---------- */
-CREATE INDEX idx_agency_packages_agency_id
-ON agency_packages (agency_id);
+CREATE INDEX idx_packages_agency_ideal_for_active
+ON agency_packages
+USING GIN (ideal_for)
+WHERE is_active = true;
 
-CREATE INDEX idx_agency_packages_category_destination
-ON agency_packages (category, destination);
+CREATE INDEX idx_packages_agency_category_destination_active
+ON agency_packages (agency_id, category, destination)
+WHERE is_active = true;
 
-CREATE INDEX idx_agency_packages_price
-ON agency_packages (price_amount)
-WHERE price_amount IS NOT NULL;
+CREATE INDEX idx_packages_agency_price_active
+ON agency_packages (agency_id, price_amount)
+WHERE is_active = true
+  AND price_amount IS NOT NULL;
 
-CREATE INDEX idx_agency_packages_active
-ON agency_packages (is_active);
-
-CREATE INDEX idx_agency_packages_created_at
-ON agency_packages (created_at);
-
+CREATE INDEX idx_packages_agency_created_active
+ON agency_packages (agency_id, created_at DESC)
+WHERE is_active = true;
 
 /* ---------- Prospects ---------- */
 CREATE INDEX idx_prospects_agency_id_name
@@ -425,6 +426,85 @@ BEFORE INSERT ON chats
 FOR EACH ROW
 EXECUTE FUNCTION auto_incr_msg_seq();
 
+/* ----------- Table Schema ----------- */
+CREATE OR REPLACE FUNCTION get_table_schema(
+    p_schema_name TEXT,
+    p_table_name  TEXT,
+    is_sample_requested BOOLEAN DEFAULT false
+)
+RETURNS JSONB
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_columns        JSONB;
+    v_sample_row     JSONB;
+    v_not_null_where TEXT;
+BEGIN
+
+    ---- Get column metadata
+    SELECT jsonb_agg(
+        jsonb_build_object(
+            'column_name', column_name,
+            'data_type', data_type,
+            'is_nullable', is_nullable,
+            'position', ordinal_position
+        )
+        ORDER BY ordinal_position
+    )
+    INTO v_columns
+    FROM information_schema.columns
+    WHERE table_schema = p_schema_name
+      AND table_name   = p_table_name;
+
+    ---- Build "all columns IS NOT NULL" condition
+    IF is_sample_requested THEN
+        SELECT string_agg(
+            format('%I IS NOT NULL', column_name),
+            ' AND '
+        )
+        INTO v_not_null_where
+        FROM information_schema.columns
+        WHERE table_schema = p_schema_name
+          AND table_name   = p_table_name;
+    END IF;
+
+    ---- Fetch ONE fully-populated sample row (optional)
+    IF is_sample_requested AND v_not_null_where IS NOT NULL THEN
+        EXECUTE format(
+            'SELECT to_jsonb(t)
+             FROM %I.%I t
+             WHERE %s
+             LIMIT 1',
+            p_schema_name,
+            p_table_name,
+            v_not_null_where
+        )
+        INTO v_sample_row;
+    END IF;
+
+    ---- Return result
+    RETURN jsonb_build_object(
+        'schema', p_schema_name,
+        'table', p_table_name,
+        'columns', COALESCE(v_columns, '[]'::jsonb),
+        'sample_row', v_sample_row
+    );
+END;
+$$;
+
+/* ----------- Generic SQL Query Executor ----------- */
+CREATE OR REPLACE FUNCTION public.query_sql(sql text)
+RETURNS SETOF jsonb AS $$
+BEGIN
+    RETURN QUERY EXECUTE format(
+        'SELECT row_to_json(t)::jsonb FROM (%s) t', 
+        sql
+    );
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+
 -- ========================================================================
 --  REALTIME CONFIGURATION
 -- ========================================================================
@@ -442,3 +522,16 @@ END $$;
 
 ALTER PUBLICATION supabase_realtime
 ADD TABLE public.prospect_presence;
+
+
+
+-- ========================================================================
+--  VECTOR EXTENSION AND EMBEDDINGS
+-- ========================================================================
+
+-- Enable extension
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- Add a vector column
+ALTER TABLE agency_packages
+ADD COLUMN embedding vector(1536);
