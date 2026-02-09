@@ -13,7 +13,7 @@ async def main():
     email_service = EmailService()
 
     # Start IMAP worker once (thread)
-    await email_service.start_imap_worker()
+    await email_service.start_imap_worker() 
 
     await asyncio.gather(
         realtime_followup_handler(),                 # async websocket

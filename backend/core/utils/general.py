@@ -8,7 +8,7 @@ logger = logging.getLogger("GENERAL_UTILS")
 # =========================================
 # 1️⃣ Generate embeddings
 # =========================================
-async def generate_embedding(text: str) -> list[float]:
+async def generate_embeddings(text: str) -> list[float]:
     """Get embedding vector for given text using OpenAI embeddings"""
     from core import client
 
@@ -19,45 +19,50 @@ async def generate_embedding(text: str) -> list[float]:
 # =========================================
 # 2️⃣ Populate embeddings for all packages
 # =========================================
-async def populate_new_embeddings(BATCH_SIZE: int = 20):
+async def populate_embeddings(BATCH_SIZE: int = 20):
     """Populate missing embeddings for agency_packages table"""
     from core import db_select, db_update
+
+    # Fetch rows that don't have embeddings yet
     rows = await db_select(
         "agency_packages",
         fields="id, name, description, destination",
-        filters={"embedding": None}, 
+        filters={"embedding": None},
     )
 
     if not rows:
-        logger.info("✅ No new rows need embeddings.")
+        logger.info("✅ No rows need embeddings.")
         return
 
     logger.info(f"🧠 Generating embeddings for {len(rows)} rows...")
 
-    # ---- build texts
-    texts = [
-        f"{r['name']} {r['description'] or ''} {r['destination'] or ''}"
-        for r in rows
-    ]
-
-    # ---- process in batches (faster + safer)
+    # Process in batches to limit API + DB concurrency
     for i in range(0, len(rows), BATCH_SIZE):
-        batch_rows = rows[i:i+BATCH_SIZE]
-        batch_texts = texts[i:i+BATCH_SIZE]
+        batch_rows = rows[i : i + BATCH_SIZE]
 
-        # parallel embedding calls
+        # Build embedding text for this batch
+        batch_texts = [
+            f"{r['name']} {r['description'] or ''} {r['destination'] or ''}"
+            for r in batch_rows
+        ]
+
+        # Generate embeddings concurrently
         embeddings = await asyncio.gather(
-            *[generate_embedding(t) for t in batch_texts]
+            *(generate_embeddings(t) for t in batch_texts)
         )
 
-        # update DB
-        for row, embedding in zip(batch_rows, embeddings):
-            await db_update(
-                "agency_packages",
-                updates={"embedding": embedding},
-                filters={"id": row["id"]},
-            )
+        # Update rows concurrently
+        await asyncio.gather(
+            *[
+                db_update(
+                    "agency_packages",
+                    updates={"embedding": embedding},
+                    filters={"id": row["id"]},
+                )
+                for row, embedding in zip(batch_rows, embeddings)
+            ]
+        )
 
-        logger.info(f"⚡ Updated {min(i+BATCH_SIZE, len(rows))}/{len(rows)}")
+        logger.info(f"⚡ Updated {min(i + BATCH_SIZE, len(rows))}/{len(rows)}")
 
     logger.info("🎉 Embedding population complete.")

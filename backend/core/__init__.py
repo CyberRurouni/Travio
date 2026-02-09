@@ -16,7 +16,7 @@ from .utils.redis_utils import emails_stream
 from .utils.redis_utils import safe_redis_operation
 from .utils.ai_utils import call_openai_safe
 from .utils.instance_registry import InstanceRegistry
-from .utils.general import generate_embedding, populate_new_embeddings
+from .utils.general import generate_embeddings, populate_embeddings
 
 # ---------- Services ----------
 from .services.crud import fetch_table_schema

@@ -11,7 +11,7 @@ from openai import OpenAI
 from supabase import create_client, create_async_client
 
 # ----------------------------
-# Logger setup
+# Logger setup 
 # ----------------------------
 basicConfig(level="INFO")
 logger = getLogger("CONFIG")
@@ -25,7 +25,7 @@ logger.addHandler(handler)
 # ----------------------------
 load_dotenv()
 EMAIL = os.getenv("EMAIL") or ""
-PASSWORD = os.getenv("PASSWORD") or ""
+PASSWORD = (os.getenv("PASSWORD") or "").strip()
 
 IMAP_SERVER = "imap.gmail.com"  # Gmail IMAP server
 IDLE_TIMEOUT = 60 * 25  # 25 minutes; Gmail requires exiting IDLE periodically
