@@ -19,7 +19,7 @@ from .utils.instance_registry import InstanceRegistry
 from .utils.general import generate_embeddings, populate_embeddings
 
 # ---------- Services ----------
-from .services.crud import fetch_table_schema
+from .services.crud import fetch_table_schema, run_sql_query
 
 # ---------- DB --------------
 from .db.crud import (
@@ -52,6 +52,9 @@ from modules.followup.followup import realtime_followup_handler
 
 # Assistant
 from modules.ai.assistant.assistant import Assistant
+
+# Recommendation
+from modules.ai.recommendation.recommend import db_scanning, get_packages_schema
 
 # ----------
 # Interface

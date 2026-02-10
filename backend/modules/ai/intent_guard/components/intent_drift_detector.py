@@ -11,21 +11,12 @@ Previous intent: "{previous_intent}"
 Analyze the latest message to determine:
 1. Has the intent changed?
 2. If yes, what is the new intent?
-3. Are any NEW travel constraints mentioned?
-
-Constraints include:
-- Dates
-- Destination
-- Budget
-- Travelers
-- Travel style
 
 Return JSON:
 {{
   "intent_changed": true/false,
   "new_intent": "string or null",
   "confidence": float 0.0-1.0,
-  "constraints_mentioned": true/false,
   "notes": "observations"
 }}
 
@@ -41,7 +32,6 @@ Email body:
             "intent_changed": False,
             "new_intent": None,
             "confidence": 0.0,
-            "constraints_mentioned": False,
             "notes": "fallback",
         },
     )
@@ -54,7 +44,6 @@ Email body:
                 "intent_changed": False,
                 "new_intent": None,
                 "confidence": 0.0,
-                "constraints_mentioned": False,
                 "notes": "fallback",
             }
 

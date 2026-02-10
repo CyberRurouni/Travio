@@ -3,7 +3,6 @@ from typing import Dict, Any, Optional
 
 from .components.first_impression import first_impression
 from .components.intent_classifier import classify_intent
-from .components.constraint_extractor import extract_constraints
 from .components.intent_drift_detector import detect_intent_drift
 from .components.scam_detector import detect_scam
 
@@ -19,7 +18,6 @@ class TravelIntentGuard:
     Central brain for analyzing travel conversations:
     - Scam detection
     - Intent understanding
-    - Constraint extraction
     - Intent drift handling
     """
 
@@ -37,9 +35,9 @@ class TravelIntentGuard:
 
         result: Dict[str, Any] = {}
 
-        # 🔍 0️⃣ Scam detection (always on, non-blocking)
-        logger.info("🕵️ Running scam detection")
-        result["scam"] = detect_scam(latest_msg)
+        # # 🔍 0️⃣ Scam detection (always on, non-blocking)
+        # logger.info("🕵️ Running scam detection")
+        # result["scam"] = detect_scam(latest_msg)
 
         # 🌟 1️⃣ First message → First Impression
         if is_first_message:
@@ -47,10 +45,6 @@ class TravelIntentGuard:
 
             fi = first_impression(subject, latest_msg)
             result["first_impression"] = fi
-
-            if fi.get("constraints_mentioned"):
-                logger.info("📌 Constraints mentioned in first message")
-                result["constraints"] = extract_constraints(latest_msg)
 
             if fi["confidence"] >= 0.9:
                 logger.info(
@@ -81,10 +75,6 @@ class TravelIntentGuard:
             drift = detect_intent_drift(latest_msg, previous_intent)
             result["intent_drift"] = drift
 
-            if drift.get("constraints_mentioned"):
-                logger.info("📌 New constraints detected during drift check")
-                result["constraints"] = extract_constraints(latest_msg)
-
             if drift["intent_changed"]:
                 logger.warning("⚠️ Intent drift detected → reverting to GENERAL layer")
                 result["conversation_layer"] = "GENERAL"
@@ -99,10 +89,6 @@ class TravelIntentGuard:
         intent = classify_intent(chat_context)
         result["intent"] = intent
         result["conversation_layer"] = intent["conversation_layer"]
-
-        if intent.get("constraints_mentioned"):
-            logger.info("📌 Constraints detected during intent classification")
-            result["constraints"] = extract_constraints(latest_msg)
 
         logger.info(
             "🏁 Analysis completed → Layer: %s | Intent: %s",

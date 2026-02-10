@@ -21,25 +21,12 @@ Your task:
 1. What does this email *seem* to be about?
 2. How clear is the intent at first glance?
 3. What is the apparent behavior?
-4. Are ANY travel constraints clearly mentioned at a surface level?
-
-Constraints include:
-- Dates or timeframes
-- Destinations
-- Budget
-- Number of travelers
-- Travel style (luxury, family, etc.)
-
-Rules:
-- If constraints are vague or implied, mark false
-- Only mark true if they are explicitly mentioned
 
 Return JSON:
 {{
   "intent": "family_trip / honeymoon / adventure_trip / business_trip / other / unknown",
   "confidence": float 0.0-1.0,
   "behavior": "exploring / hesitant / decisive / urgent / curious / unknown",
-  "constraints_mentioned": true/false,
   "notes": "brief first-impression reasoning"
 }}
 
@@ -54,7 +41,6 @@ Output:
   "intent": "family_trip",
   "confidence": 0.9,
   "behavior": "exploring",
-  "constraints_mentioned": true,
   "notes": "Destination and dates are explicitly mentioned"
 }}
 
@@ -75,7 +61,6 @@ Body:
             "intent": "unknown",
             "confidence": 0.0,
             "behavior": "unknown",
-            "constraints_mentioned": False,
             "notes": "fallback",
         },
     )
@@ -88,7 +73,6 @@ Body:
                 "intent": "unknown",
                 "confidence": 0.0,
                 "behavior": "unknown",
-                "constraints_mentioned": False,
                 "notes": "fallback",
             }
 

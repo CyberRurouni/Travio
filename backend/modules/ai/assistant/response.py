@@ -1,6 +1,9 @@
 import json
+import logging
 from typing import Dict, Any
 from core import call_openai_safe
+
+logger = logging.getLogger("ASSISTANT")
 
 ai_persona = """
 You are an AI Travel Assistant. Your purpose is to assist prospects in exploring and understanding travel options. 
@@ -33,6 +36,7 @@ Data you can rely on:
 def generate_ai_response(
     chat_container: list,
     intent_guard_data: Dict[str, Any],
+    db_scan_results: list[dict] = None
 ) -> Dict[str, Any]:
     """
     Generates the AI Travel Assistant response.
@@ -43,6 +47,7 @@ def generate_ai_response(
       "actions": {
           "type": "general_response / database_scan / seek_validation / recommend_package",
           "details": {
+              "note": str (not for general_response)
               "reason": str
           }
       }
@@ -69,6 +74,11 @@ Instructions:
     3. "seek_validation" → involve human agent ONLY if user intent is very strong (90-100% confident).
     4. "recommend_package" → suggest personalized options when intent is clear.
 - Always provide reasoning in "reason" explaining why this type is chosen.
+- When action type is "seek_validation", "database_scan", or "recommend_package", add a "note" in details, 
+  the note is meant for either the human agent or for the database scanning logic, it should either aware the human agent about the user's strong intent and enthusiasm and request validation, 
+  or provide necessary context for the database scanning logic to understand the user's needs and constraints.
+  Furthermore, the "message" should provide necessary context for future AI responses to understand that validation has been requested or that a database scan is needed,
+  so the future AI responses can maintain the conversation flow and provide relevant information based on the fact that validation is pending or a database scan is in progress.
 - If user intent is not fully clear but they mention a package, respond with a clarifying question like:
     "Would you like me to check if our agent can arrange this package for you?"
 - Never hallucinate availability or commit autonomously.
@@ -81,11 +91,14 @@ Output JSON ONLY:
   "actions": {{
       "type": "general_response / database_scan / seek_validation / recommend_package",
       "details": {{
+          "note": "string with context for agent validation or database scanning (not for general_response)",
           "reason": "string explaining why this type was chosen"
       }}
   }}
 }}
 """
+    
+    logger.info("FINAL AI PROMPT:\n%s", prompt)
 
     result = call_openai_safe(
         messages=[{"role": "user", "content": prompt}],

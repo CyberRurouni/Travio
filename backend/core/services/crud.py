@@ -72,3 +72,7 @@ async def fetch_table_schema(
             exc_info=True,
         )
         return {}
+    
+async def run_sql_query(sql: str):
+    from core import db_rpc  # Avoid circular import
+    return await db_rpc("query_sql", {"sql": sql})

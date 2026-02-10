@@ -13,20 +13,13 @@ You are an AI travel analyst embedded in a sales-oriented travel assistant.
 Your task:
 1. Identify the primary travel intent
 2. Assess clarity and maturity of intent
-3. Decide conversation layer
-4. Detect whether the user has mentioned concrete travel constraints
-
-Rules:
-- Constraints include dates, destination, budget, travelers, travel style
-- Mentioned once is enough to mark true
-- Do NOT extract them — only detect presence
+3. Decide conversation layer (GENERAL vs INTENT)
 
 Return JSON:
 {{
   "intent": "family_trip / honeymoon / adventure_trip / business_trip / other / unknown",
   "confidence": float (0.0 - 1.0),
   "conversation_layer": "GENERAL / INTENT",
-  "constraints_mentioned": true/false,
   "notes": "short explanation"
 }}
 
@@ -41,7 +34,6 @@ Output:
   "intent": "honeymoon",
   "confidence": 0.9,
   "conversation_layer": "INTENT",
-  "constraints_mentioned": true,
   "notes": "Destination and timeframe are clearly specified"
 }}
 
@@ -58,7 +50,6 @@ Now analyze:
             "intent": "unknown",
             "confidence": 0.0,
             "conversation_layer": "GENERAL",
-            "constraints_mentioned": False,
             "notes": "fallback"
         }
     )
@@ -71,7 +62,6 @@ Now analyze:
                 "intent": "unknown",
                 "confidence": 0.0,
                 "conversation_layer": "GENERAL",
-                "constraints_mentioned": False,
                 "notes": "fallback"
             }
 

@@ -3,8 +3,14 @@ import json
 import asyncio
 import logging
 
+from collections import defaultdict
 from datetime import timedelta
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s.%(msecs)03d | %(levelname)s | %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 logger = logging.getLogger("AI_EMAIL_ASSISTANT")
 
 
@@ -182,6 +188,7 @@ class EmailService:
             if not agency_id or not prospect_id:
                 logger.error("❌ Prospect registration failed")
                 return
+            
 
             # ─── Prospect presence update ────────────────────────
             await prospect.mark_presence(channel_type="email")
@@ -224,6 +231,7 @@ class EmailService:
                 prospect_email=sender_email,
                 msg=body,
                 first_impression=session._cached_first_impression,
+                agent_email=str(os.getenv("AGENT_EMAIL")),
             )
 
         except Exception:
