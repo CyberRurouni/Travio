@@ -1,6 +1,12 @@
 import logging
 from .components.request import formulate_request
-from core import fetch_table_schema, run_sql_query, generate_embeddings, call_openai_safe
+from .utils import format_packages, format_search_request, insert_recommendation_event, insert_recommendation_item
+from core import (
+    fetch_table_schema,
+    run_sql_query,
+    generate_embeddings,
+    call_openai_safe,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("AI_TRAVEL")
@@ -193,14 +199,14 @@ Return ONLY the JSON object.
 
 async def smart_package_search(user_request: dict) -> list[dict]:
     schema = await get_packages_schema()
-
     sql = await generate_sql_from_request(user_request, schema)
+    request_embedding = ""
     logger.info("🧠 AI generated SQL:\n%s", sql)
 
     # Vector embedding for main query
     if "<=>" in sql:
-        query_embedding = await generate_embeddings(user_request["main_query"])
-        sql = sql.replace("query_embedding", f"'{query_embedding}'")
+        request_embedding = await generate_embeddings(user_request["main_query"])
+        sql = sql.replace("query_embedding", f"'{request_embedding}'")
 
     # Vector embedding for vague exclusions
     if "vague_exclusion" in user_request and "exclude_embedding" in sql:
@@ -208,32 +214,55 @@ async def smart_package_search(user_request: dict) -> list[dict]:
         sql = sql.replace("exclude_embedding", f"'{exclude_embedding}'")
 
     results = await run_sql_query(sql)
-    logger.info("🧠 AI query returned %d rows", len(results))
 
-    return results
+    return results, request_embedding
 
 
-async def db_scanning(note: str):
-    # # Example request structure:
-    # request = {
-    #     "main_query": "I'm looking for fun and exciting travel experiences, maybe with adventure, nature, or cultural activities, for a small group or family. Budget is flexible, and duration can be around a week.",
-    #     "constraints": {
-    #         "category": {
-    #             "include": ["adventure", "travel"],
-    #             "exclude": ["corporate", "umrah"],
-    #         },
-    #         "price_amount": {"min": 500, "max": 10000},
-    #         "price_currency": {"include": ["USD", "CAD"]},
-    #         "ideal_for": {"include": ["family", "group"]},
-    #     },
-    #     "vague_exclusion": "avoid snowy mountains, eco-friendly packages",
-    # }
+async def db_scanning(user_note: str, session_id: str):
+    """
+    Simulates scanning the database for packages based on the user note.
+    Returns both structured objects and formatted text blocks.
+    """
+    # Formulate structured request from the note
+    search_request = formulate_request(user_note)
+    logger.info("🔍 Formulated search request:\n%s", search_request)
 
-    request = formulate_request(note)
-    logger.info("🔍 Formulated structured request:\n%s", request)
+    # Fetch raw results
+    raw_search_results, request_embedding = await smart_package_search(search_request)
 
-    results = await smart_package_search(request)
+    # Format results
+    formatted_packages = format_packages(raw_search_results)
+    package_text_blocks = [entry["details"] for entry in formatted_packages]
 
-    logger.info("📦 Results:\n%s", results)
+    # Db insert for recommendation event and items
+    formatted_request = format_search_request(search_request)
+    if not request_embedding:
+       request_embedding = await generate_embeddings(formatted_request)
+    
+    recommendation_event_id = await insert_recommendation_event(session_id, request_embedding, formatted_request)
+    if recommendation_event_id and package_text_blocks:
+        for package in package_text_blocks:
+            memory_embedding = await generate_embeddings(f"User Request: {search_request['main_query']}\nPackage Details: {package}")
+            await insert_recommendation_item(session_id, recommendation_event_id, package, memory_embedding)
 
-    return results
+    # Generate summary message
+    num_packages = len(raw_search_results)
+    if num_packages == 0:
+        summary_message = "⚠️ No packages found matching the criteria."
+        logger.info(summary_message)
+    elif num_packages == 1:
+        summary_message = "✅ 1 package found matching the criteria."
+        logger.info(summary_message)
+    else:
+        summary_message = f"✅ {num_packages} packages found matching the criteria."
+        logger.info(summary_message)
+
+    logger.info("📄 Formatted package results:\n%s", "\n\n".join(package_text_blocks))
+
+
+    return {
+        "results": formatted_packages,
+        "message": summary_message,
+    }
+    
+

@@ -208,7 +208,6 @@ class EmailService:
 
             # ─── Persist inbound message ─────────────────────────
             await session.chat_container(
-                session_id=str(session.session_id),
                 sender="prospect",
                 text=body,
             )
@@ -221,7 +220,6 @@ class EmailService:
                 factory=Assistant,
                 agency_id=str(agency_id),
                 prospect_id=str(prospect_id),
-                session_id=str(session.session_id),
                 session=session,
                 factory_type="sync",
             )

@@ -1,8 +1,9 @@
 
 /* =========================================================
-   EXTENSIONS (required for UUIDs)
+   EXTENSIONS
    ========================================================= */
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+CREATE EXTENSION IF NOT EXISTS vector;
 
 
 
@@ -78,6 +79,9 @@ CREATE TABLE agency_packages (
     -- operational
     is_active BOOLEAN DEFAULT true,
     is_custom BOOLEAN DEFAULT false,
+
+    -- embeddings for semantic search
+    embedding vector(1536),
 
     created_at TIMESTAMPTZ DEFAULT now(),
     updated_at TIMESTAMPTZ DEFAULT now()
@@ -189,6 +193,39 @@ CREATE TABLE chats (
     sender TEXT NOT NULL,               -- prospect | assistant
     msg TEXT,
     PRIMARY KEY (session_id, msg_sequence)
+);
+
+
+/* =========================================================
+    RECOMMENDATION EVENTS
+   ---------------------------------------------------------
+    Logs every time a recommendation is made.
+   ========================================================= */
+create table recommendation_events (
+    id UUID primary key default gen_random_uuid(),
+    session_id UUID not null,
+    prospect_request text not null,
+    request_embedding vector(1536),
+    created_at TIMESTAMPTZ not null default now()
+);
+
+
+
+/* =========================================================
+    RECOMMENDATION ITEMS
+   ---------------------------------------------------------
+    Stores each recommended package for an event.
+   ========================================================= */
+create table recommendation_items (
+    id UUID primary key default gen_random_uuid(),
+    recommendation_event_id UUID not null
+        references recommendation_events(id)
+        on delete cascade,
+    session_id UUID not null,
+    package_id UUID not null,
+    package_obj_snapshot JSONB not null,
+    memory_embedding vector(1536), -- Combination of request + package for semantic search
+    created_at TIMESTAMPTZ not null default now()
 );
 
 
@@ -315,6 +352,16 @@ ON sessions (initiated_at DESC);
 /* ---------- Chats ---------- */
 CREATE INDEX idx_chats_session_id
 ON chats (session_id);
+
+/* ---------- Recommendation Events ---------- */
+create index idx_re_events_session_created
+on recommendation_events (session_id, created_at desc);
+
+/* ---------- Recommendation Items ---------- */
+create index idx_re_items_session_created
+on recommendation_items (session_id, created_at desc);
+create index idx_re_items_re_event_id
+on recommendation_items (recommendation_event_id);
 
 
 /* =========================================================
@@ -524,14 +571,3 @@ ALTER PUBLICATION supabase_realtime
 ADD TABLE public.prospect_presence;
 
 
-
--- ========================================================================
---  VECTOR EXTENSION AND EMBEDDINGS
--- ========================================================================
-
--- Enable extension
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- Add a vector column
-ALTER TABLE agency_packages
-ADD COLUMN embedding vector(1536);

@@ -158,7 +158,7 @@ Return ONLY the JSON object.
         messages=[{"role": "user", "content": prompt}],
         max_tokens=400,
         response_format="json",
-        fallback_response={{
+        fallback_response={
           "main_query": "",
           "constraints": {
             "category": {"include": [], "exclude": []},
@@ -170,7 +170,7 @@ Return ONLY the JSON object.
             "includes": {"include": []}
           },
           "vague_exclusion": ""
-        }},
+        },
     )
 
     if isinstance(result, str):

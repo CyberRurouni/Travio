@@ -55,6 +55,7 @@ from modules.ai.assistant.assistant import Assistant
 
 # Recommendation
 from modules.ai.recommendation.recommend import db_scanning, get_packages_schema
+from modules.ai.recommendation.components.reference import ReferenceMemory
 
 # ----------
 # Interface
