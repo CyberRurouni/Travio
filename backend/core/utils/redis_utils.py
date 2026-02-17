@@ -255,6 +255,7 @@ class RedisStreamHandler:
 emails_broker = create_redis_connection(db=0)
 prospects_broker = create_redis_connection(db=1)
 session_broker = create_redis_connection(db=2)
+recommendation_broker = create_redis_connection(db=3)
 
 
 # ============================================================================

@@ -1,11 +1,17 @@
-import logging
+import logging, json
 from .components.request import formulate_request
-from .utils import format_packages, format_search_request, insert_recommendation_event, insert_recommendation_item
+from .utils import (
+    format_packages,
+    insert_recommendation_event,
+    insert_recommendation_item,
+)
 from core import (
     fetch_table_schema,
     run_sql_query,
     generate_embeddings,
     call_openai_safe,
+    safe_redis_operation,
+    recommendation_broker,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -16,7 +22,9 @@ async def get_packages_schema():
     return await fetch_table_schema("public", "agency_packages", include_sample=False)
 
 
-async def generate_sql_from_request(request: dict, schema: dict) -> str:
+async def generate_sql_from_request(
+    request: dict, schema: dict, exclude_previous_ids: bool
+) -> str:
     """
     Generate SQL using structured JSON input with constraints and vague exclusions.
     """
@@ -31,6 +39,9 @@ INPUT
 ────────────────────────────────────
 User Request:
 {request}
+
+Exclude Previous IDs:
+{exclude_previous_ids}
 
 TABLE NAME:
 agency_packages
@@ -52,7 +63,7 @@ ABSOLUTE OUTPUT RULES (MANDATORY)
 }}
 
 5. The SQL MUST start with SELECT.
-6. Limit results to 10 rows.
+6. Limit results to 5 rows.
 
 ────────────────────────────────────
 ALLOWED SQL SCOPE
@@ -100,17 +111,19 @@ CONSTRAINT HANDLING
 
 Apply constraints ONLY if they exist in the input.
 
-- exclude_ids:
-  AND id NOT IN (...)
+- exclude_previous_ids:
+  If exclude_previous_ids = true, always add:
+      AND id NOT IN (EXCLUDE_PREV_IDS_CLAUSE)
+  If false, do NOT include this clause.
 
 - category / destination / price_currency / etc:
   - include → column IN (...)
   - exclude → column NOT IN (...)
 
-- price_amount / duration_days / etc:
+- price_amount / duration_days:
   Use BETWEEN min AND max
 
-- ideal_for:
+- ideal_for (array column):
   Use array overlap:
   ideal_for && ARRAY[...]
 
@@ -129,8 +142,8 @@ If "vague_exclusion" is a non-empty string:
         AND is_active = TRUE
   )
 
-DO NOT insert vague text into SQL.
-DO NOT use ILIKE or text matching.
+Do NOT insert vague text into SQL.
+Do NOT use ILIKE or text matching.
 
 ────────────────────────────────────
 ORDERING RULES
@@ -138,8 +151,8 @@ ORDERING RULES
 
 - ALWAYS order by vector similarity:
   ORDER BY embedding <=> query_embedding
-
 - Vector ordering MUST NOT be removed.
+- main_query text MUST NOT appear in WHERE; it only affects ORDER BY.
 
 ────────────────────────────────────
 EXAMPLES
@@ -153,35 +166,37 @@ INPUT:
     "destination": {{ "include": ["Canada"], "exclude": ["Quebec"] }},
     "category": {{ "include": ["adventure", "travel"] }}
   }},
-  "vague_exclusion": "snowy regions"
+  "vague_exclusion": "snowy regions",
+  "exclude_previous_ids": true
 }}
 
 OUTPUT:
 {{
-  "sql": "SELECT id, name, description, destination, price_amount, price_currency, duration_days FROM agency_packages WHERE is_active = TRUE AND destination IN ('Canada') AND destination NOT IN ('Quebec') AND category IN ('adventure','travel') AND id NOT IN (SELECT id FROM agency_packages WHERE embedding <=> exclude_embedding < 0.3 AND is_active = TRUE) ORDER BY embedding <=> query_embedding LIMIT 10"
+  "sql": "SELECT id, name, description, destination, price_amount, price_currency, duration_days FROM agency_packages WHERE is_active = TRUE AND destination IN ('Canada') AND destination NOT IN ('Quebec') AND category IN ('adventure','travel') AND id NOT IN (EXCLUDE_PREV_IDS_CLAUSE) AND id NOT IN (SELECT id FROM agency_packages WHERE embedding <=> exclude_embedding < 0.3 AND is_active = TRUE) ORDER BY embedding <=> query_embedding LIMIT 5"
 }}
 
 Example 2:
 INPUT:
 {{
   "main_query": "Fun trips for a small group",
-  "constraints": {{
-    "exclude_ids": ["uuid-1", "uuid-2"]
-  }},
-  "vague_exclusion": ""
+  "constraints": {{}},
+  "vague_exclusion": "",
+  "exclude_previous_ids": false
+
 }}
 
 OUTPUT:
 {{
-  "sql": "SELECT id, name, description, destination, price_amount, price_currency, duration_days FROM agency_packages WHERE is_active = TRUE AND id NOT IN ('uuid-1','uuid-2') ORDER BY embedding <=> query_embedding LIMIT 10"
+  "sql": "SELECT id, name, description, destination, price_amount, price_currency, duration_days FROM agency_packages WHERE is_active = TRUE ORDER BY embedding <=> query_embedding LIMIT 5"
 }}
 
 ────────────────────────────────────
 NOW GENERATE SQL
 ────────────────────────────────────
 
-Generate SQL for the provided INPUT.
-Return ONLY the JSON object.
+- Generate SQL for the provided INPUT.
+- Always include EXCLUDE_PREV_IDS_CLAUSE if exclude_previous_ids is true.
+- Return ONLY the JSON object.
 """
 
     resp = call_openai_safe(
@@ -197,28 +212,69 @@ Return ONLY the JSON object.
     return sql
 
 
-async def smart_package_search(user_request: dict) -> list[dict]:
+async def smart_package_search(
+    user_request: dict,
+    exclude_previous_ids: bool,
+    session_id: str,
+    prospect_id: str,
+) -> list[dict]:
     schema = await get_packages_schema()
-    sql = await generate_sql_from_request(user_request, schema)
-    request_embedding = ""
-    logger.info("🧠 AI generated SQL:\n%s", sql)
+    sql = await generate_sql_from_request(user_request, schema, exclude_previous_ids)
+    logger.info("🧠 AI generated SQL (with placeholders):\n%s", sql)
 
-    # Vector embedding for main query
+    # 1️⃣ Generate vector embedding for main query
     if "<=>" in sql:
         request_embedding = await generate_embeddings(user_request["main_query"])
         sql = sql.replace("query_embedding", f"'{request_embedding}'")
 
-    # Vector embedding for vague exclusions
-    if "vague_exclusion" in user_request and "exclude_embedding" in sql:
+    # 2️⃣ Vector embedding for vague exclusions
+    if user_request.get("vague_exclusion") and "exclude_embedding" in sql:
         exclude_embedding = await generate_embeddings(user_request["vague_exclusion"])
         sql = sql.replace("exclude_embedding", f"'{exclude_embedding}'")
 
+    # 3️⃣ Handle exclude_previous_ids
+    prev_ids_label = "EXCLUDE_PREV_IDS_CLAUSE"
+    cache_key = f"prev_package_ids:{session_id}:{prospect_id}"
+    prev_ids = []
+
+    if exclude_previous_ids:
+        # Fetch cached IDs
+        cached = safe_redis_operation(recommendation_broker.get, cache_key)
+        if cached:
+            try:
+                prev_ids = json.loads(cached)
+            except json.JSONDecodeError:
+                prev_ids = []
+
+        # Replace placeholder in SQL
+        if prev_ids:
+            sql = sql.replace(prev_ids_label, ",".join(f"'{i}'" for i in prev_ids))
+        else:
+            # If no cached IDs, remove the clause entirely for cleaner SQL
+            sql = sql.replace(f"AND id NOT IN ({prev_ids_label})", "")
+    else:
+        # Reset cache if new request
+        safe_redis_operation(recommendation_broker.delete, cache_key)
+
+    # 4️⃣ Run the SQL
     results = await run_sql_query(sql)
 
-    return results, request_embedding
+    # 5️⃣ Cache the new IDs for future "more..." requests
+    new_ids = [r["id"] for r in results]
+    if new_ids:
+        safe_redis_operation(
+            recommendation_broker.set,
+            cache_key,
+            json.dumps(new_ids),
+            ex=24 * 3600,
+        )
+
+    return results
 
 
-async def db_scanning(user_note: str, session_id: str):
+async def db_scanning(
+    user_note: str, session_id: str, prospect_id: str, exclude_previous_ids: bool
+):
     """
     Simulates scanning the database for packages based on the user note.
     Returns both structured objects and formatted text blocks.
@@ -228,22 +284,34 @@ async def db_scanning(user_note: str, session_id: str):
     logger.info("🔍 Formulated search request:\n%s", search_request)
 
     # Fetch raw results
-    raw_search_results, request_embedding = await smart_package_search(search_request)
+    raw_search_results = await smart_package_search(
+        user_request=search_request,
+        session_id=session_id,
+        prospect_id=prospect_id,
+        exclude_previous_ids=exclude_previous_ids,
+    )
 
     # Format results
     formatted_packages = format_packages(raw_search_results)
     package_text_blocks = [entry["details"] for entry in formatted_packages]
 
     # Db insert for recommendation event and items
-    formatted_request = format_search_request(search_request)
-    if not request_embedding:
-       request_embedding = await generate_embeddings(formatted_request)
-    
-    recommendation_event_id = await insert_recommendation_event(session_id, request_embedding, formatted_request)
-    if recommendation_event_id and package_text_blocks:
-        for package in package_text_blocks:
-            memory_embedding = await generate_embeddings(f"User Request: {search_request['main_query']}\nPackage Details: {package}")
-            await insert_recommendation_item(session_id, recommendation_event_id, package, memory_embedding)
+    request_embedding = await generate_embeddings(user_note)
+    recommendation_event_id = await insert_recommendation_event(
+        session_id, request_embedding, user_note
+    )
+    if recommendation_event_id and formatted_packages:
+        for idx, package in enumerate(formatted_packages):
+            memory_embedding = await generate_embeddings(
+                f"User Request: {user_note}\nPackage Details: {package}"
+            )
+            await insert_recommendation_item(
+                session_id,
+                recommendation_event_id,
+                package["package_id"],
+                raw_search_results[idx],
+                memory_embedding,
+            )
 
     # Generate summary message
     num_packages = len(raw_search_results)
@@ -259,10 +327,7 @@ async def db_scanning(user_note: str, session_id: str):
 
     logger.info("📄 Formatted package results:\n%s", "\n\n".join(package_text_blocks))
 
-
     return {
         "results": formatted_packages,
         "message": summary_message,
     }
-    
-

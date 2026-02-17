@@ -201,12 +201,14 @@ CREATE TABLE chats (
    ---------------------------------------------------------
     Logs every time a recommendation is made.
    ========================================================= */
-create table recommendation_events (
-    id UUID primary key default gen_random_uuid(),
-    session_id UUID not null,
-    prospect_request text not null,
-    request_embedding vector(1536),
-    created_at TIMESTAMPTZ not null default now()
+CREATE TABLE recommendation_events (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id UUID NOT NULL
+        REFERENCES sessions(id)
+        ON DELETE CASCADE,
+    prospect_request TEXT NOT NULL,
+    request_embedding VECTOR(1536),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 
@@ -216,16 +218,18 @@ create table recommendation_events (
    ---------------------------------------------------------
     Stores each recommended package for an event.
    ========================================================= */
-create table recommendation_items (
-    id UUID primary key default gen_random_uuid(),
-    recommendation_event_id UUID not null
-        references recommendation_events(id)
-        on delete cascade,
-    session_id UUID not null,
-    package_id UUID not null,
-    package_obj_snapshot JSONB not null,
-    memory_embedding vector(1536), -- Combination of request + package for semantic search
-    created_at TIMESTAMPTZ not null default now()
+CREATE TABLE recommendation_items (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    recommendation_event_id UUID NOT NULL
+        REFERENCES recommendation_events(id)
+        ON DELETE CASCADE,
+    session_id UUID NOT NULL
+        REFERENCES sessions(id)
+        ON DELETE CASCADE,
+    package_id UUID NOT NULL,
+    package_obj_snapshot JSONB NOT NULL,
+    memory_embedding VECTOR(1536), -- Combination of request + package for semantic search
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 
@@ -360,8 +364,6 @@ on recommendation_events (session_id, created_at desc);
 /* ---------- Recommendation Items ---------- */
 create index idx_re_items_session_created
 on recommendation_items (session_id, created_at desc);
-create index idx_re_items_re_event_id
-on recommendation_items (recommendation_event_id);
 
 
 /* =========================================================

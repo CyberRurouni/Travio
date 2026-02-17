@@ -11,7 +11,7 @@ from genesis.config import fetch_unread_emails
 ### ==========
 
 # ---------- Utilities ----------
-from .utils.redis_utils import emails_broker, prospects_broker, session_broker
+from .utils.redis_utils import emails_broker, prospects_broker, session_broker, recommendation_broker
 from .utils.redis_utils import emails_stream
 from .utils.redis_utils import safe_redis_operation
 from .utils.ai_utils import call_openai_safe

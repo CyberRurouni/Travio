@@ -54,6 +54,7 @@ async def handle_action(
 
             note = action_details.get("note", "")
             reason = action_details.get("reason", "")
+            extra = action_details.get("extra", {})
 
             # 1️⃣ Log pending state
             await assistant.session.chat_container(
@@ -62,21 +63,23 @@ async def handle_action(
         status: pending
         reason: {reason}
         context: {note}
+        exclude previous ids = {extra.get("exclude_previous_ids", False)}
         results: null""",
                 sender="system",
             )
 
             # 2️⃣ Execute scan
-            scanning = await db_scanning(note, session_id=assistant.session.session_id)
+            scanning = await db_scanning(note, session_id=assistant.session.session_id, prospect_id=assistant.prospect_id, exclude_previous_ids = extra.get("exclude_previous_ids", False) )
 
             # 3️⃣ Log completion state
             await assistant.session.chat_container(
                 text=f"""[STATE_UPDATE]
-        action_type: database_scan
-        status: success
-        reason: Scan completed
-        context: {note}
-        results: {json.dumps(scanning, indent=2)}""",
+            action_type: database_scan
+            status: success
+            reason: Scan completed
+            context: {note}
+            exclude previous ids = {extra.get("exclude_previous_ids", False)}
+            results: {json.dumps(scanning, indent=2)}""",
                 sender="system",
             )
 
