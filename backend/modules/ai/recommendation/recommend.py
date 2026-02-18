@@ -63,7 +63,8 @@ ABSOLUTE OUTPUT RULES (MANDATORY)
 }}
 
 5. The SQL MUST start with SELECT.
-6. Limit results to 5 rows.
+6. Limit results to 5 rows if limit not provided.
+7. Limit results to 10 rows if limit exceeds 10.
 
 ────────────────────────────────────
 ALLOWED SQL SCOPE
@@ -167,12 +168,13 @@ INPUT:
     "category": {{ "include": ["adventure", "travel"] }}
   }},
   "vague_exclusion": "snowy regions",
-  "exclude_previous_ids": true
+  "exclude_previous_ids": true,
+  "limit": 3,
 }}
 
 OUTPUT:
 {{
-  "sql": "SELECT id, name, description, destination, price_amount, price_currency, duration_days FROM agency_packages WHERE is_active = TRUE AND destination IN ('Canada') AND destination NOT IN ('Quebec') AND category IN ('adventure','travel') AND id NOT IN (EXCLUDE_PREV_IDS_CLAUSE) AND id NOT IN (SELECT id FROM agency_packages WHERE embedding <=> exclude_embedding < 0.3 AND is_active = TRUE) ORDER BY embedding <=> query_embedding LIMIT 5"
+  "sql": "SELECT id, name, description, destination, price_amount, price_currency, duration_days FROM agency_packages WHERE is_active = TRUE AND destination IN ('Canada') AND destination NOT IN ('Quebec') AND category IN ('adventure','travel') AND id NOT IN (EXCLUDE_PREV_IDS_CLAUSE) AND id NOT IN (SELECT id FROM agency_packages WHERE embedding <=> exclude_embedding < 0.3 AND is_active = TRUE) ORDER BY embedding <=> query_embedding LIMIT 3"
 }}
 
 Example 2:
@@ -182,7 +184,6 @@ INPUT:
   "constraints": {{}},
   "vague_exclusion": "",
   "exclude_previous_ids": false
-
 }}
 
 OUTPUT:
@@ -211,6 +212,11 @@ NOW GENERATE SQL
 
     return sql
 
+import logging, json
+
+logger = logging.getLogger("AI_TRAVEL")
+logging.basicConfig(level=logging.INFO)
+
 
 async def smart_package_search(
     user_request: dict,
@@ -218,56 +224,93 @@ async def smart_package_search(
     session_id: str,
     prospect_id: str,
 ) -> list[dict]:
-    schema = await get_packages_schema()
-    sql = await generate_sql_from_request(user_request, schema, exclude_previous_ids)
-    logger.info("🧠 AI generated SQL (with placeholders):\n%s", sql)
+    results = []
+    try:
+        logger.info("🧠 Starting smart package search | Prospect=%s | Exclude previous: %s", prospect_id, exclude_previous_ids)
 
-    # 1️⃣ Generate vector embedding for main query
-    if "<=>" in sql:
-        request_embedding = await generate_embeddings(user_request["main_query"])
-        sql = sql.replace("query_embedding", f"'{request_embedding}'")
+        # 0️⃣ Get schema and generate SQL
+        try:
+            schema = await get_packages_schema()
+            sql = await generate_sql_from_request(user_request, schema, exclude_previous_ids)
+            logger.info("💡 AI generated SQL (with placeholders):\n%s", sql)
+        except Exception as e:
+            logger.error("❌ Failed to generate SQL: %s", e)
+            return results
 
-    # 2️⃣ Vector embedding for vague exclusions
-    if user_request.get("vague_exclusion") and "exclude_embedding" in sql:
-        exclude_embedding = await generate_embeddings(user_request["vague_exclusion"])
-        sql = sql.replace("exclude_embedding", f"'{exclude_embedding}'")
+        # 1️⃣ Generate vector embedding for main query
+        try:
+            if "<=>" in sql:
+                logger.info("🔗 Generating embedding for main query:\n%s", user_request.get("main_query"))
+                request_embedding = await generate_embeddings(user_request.get("main_query", ""))
+                sql = sql.replace("query_embedding", f"'{request_embedding}'")
+                logger.info("✅ Main query embedding applied to SQL.")
+        except Exception as e:
+            logger.warning("⚠️ Failed to generate main query embedding: %s", e)
 
-    # 3️⃣ Handle exclude_previous_ids
-    prev_ids_label = "EXCLUDE_PREV_IDS_CLAUSE"
-    cache_key = f"prev_package_ids:{session_id}:{prospect_id}"
-    prev_ids = []
+        # 2️⃣ Vector embedding for vague exclusions
+        try:
+            if user_request.get("vague_exclusion") and "exclude_embedding" in sql:
+                logger.info("🔗 Generating embedding for vague exclusion:\n%s", user_request["vague_exclusion"])
+                exclude_embedding = await generate_embeddings(user_request["vague_exclusion"])
+                sql = sql.replace("exclude_embedding", f"'{exclude_embedding}'")
+                logger.info("✅ Vague exclusion embedding applied to SQL.")
+        except Exception as e:
+            logger.warning("⚠️ Failed to generate exclusion embedding: %s", e)
 
-    if exclude_previous_ids:
-        # Fetch cached IDs
-        cached = safe_redis_operation(recommendation_broker.get, cache_key)
-        if cached:
-            try:
-                prev_ids = json.loads(cached)
-            except json.JSONDecodeError:
-                prev_ids = []
+        # 3️⃣ Handle exclude_previous_ids
+        try:
+            prev_ids_label = "EXCLUDE_PREV_IDS_CLAUSE"
+            cache_key = f"prev_package_ids:{session_id}:{prospect_id}"
+            prev_ids = []
 
-        # Replace placeholder in SQL
-        if prev_ids:
-            sql = sql.replace(prev_ids_label, ",".join(f"'{i}'" for i in prev_ids))
-        else:
-            # If no cached IDs, remove the clause entirely for cleaner SQL
-            sql = sql.replace(f"AND id NOT IN ({prev_ids_label})", "")
-    else:
-        # Reset cache if new request
-        safe_redis_operation(recommendation_broker.delete, cache_key)
+            if exclude_previous_ids:
+                logger.info("📦 Checking cached previous package IDs...")
+                cached = safe_redis_operation(recommendation_broker.get, cache_key)
+                if cached:
+                    try:
+                        prev_ids = json.loads(cached)
+                        logger.info("✅ Cached previous IDs found: %s", prev_ids)
+                    except json.JSONDecodeError:
+                        prev_ids = []
+                        logger.warning("⚠️ Failed to decode cached previous IDs.")
+                if prev_ids:
+                    sql = sql.replace(prev_ids_label, ",".join(f"'{i}'" for i in prev_ids))
+                    logger.info("✅ Previous IDs applied to SQL.")
+                else:
+                    sql = sql.replace(f"AND id NOT IN ({prev_ids_label})", "")
+                    logger.info("ℹ️ No previous IDs found; clause removed for cleaner SQL.")
+            else:
+                logger.info("🗑️ Resetting previous IDs cache for new request.")
+                safe_redis_operation(recommendation_broker.delete, cache_key)
+        except Exception as e:
+            logger.warning("⚠️ Failed handling previous IDs: %s", e)
 
-    # 4️⃣ Run the SQL
-    results = await run_sql_query(sql)
+        # 4️⃣ Run the SQL
+        try:
+            logger.info("🚀 Executing SQL query...")
+            results = await run_sql_query(sql)
+            logger.info("✅ SQL query executed. Number of results: %d", len(results))
+        except Exception as e:
+            logger.error("❌ SQL execution failed: %s", e)
 
-    # 5️⃣ Cache the new IDs for future "more..." requests
-    new_ids = [r["id"] for r in results]
-    if new_ids:
-        safe_redis_operation(
-            recommendation_broker.set,
-            cache_key,
-            json.dumps(new_ids),
-            ex=24 * 3600,
-        )
+        # 5️⃣ Cache new IDs
+        try:
+            new_ids = [r["id"] for r in results]
+            if new_ids:
+                safe_redis_operation(
+                    recommendation_broker.set,
+                    cache_key,
+                    json.dumps(new_ids),
+                    ex=24 * 3600,
+                )
+                logger.info("💾 Cached new package IDs for future use: %s", new_ids)
+        except Exception as e:
+            logger.warning("⚠️ Failed caching new package IDs: %s", e)
+
+        logger.info("🧠 Smart package search completed for prospect %s", prospect_id)
+
+    except Exception as e:
+        logger.critical("❌ Unexpected error in smart_package_search: %s", e)
 
     return results
 
@@ -275,59 +318,88 @@ async def smart_package_search(
 async def db_scanning(
     user_note: str, session_id: str, prospect_id: str, exclude_previous_ids: bool
 ):
-    """
-    Simulates scanning the database for packages based on the user note.
-    Returns both structured objects and formatted text blocks.
-    """
-    # Formulate structured request from the note
-    search_request = formulate_request(user_note)
-    logger.info("🔍 Formulated search request:\n%s", search_request)
+    response = {"results": [], "message": "⚠️ Scan failed."}
+    try:
+        logger.info("🔍 Starting DB scan | Prospect=%s", prospect_id)
+        logger.info("📝 User note:\n%s", user_note)
 
-    # Fetch raw results
-    raw_search_results = await smart_package_search(
-        user_request=search_request,
-        session_id=session_id,
-        prospect_id=prospect_id,
-        exclude_previous_ids=exclude_previous_ids,
-    )
+        # Formulate structured request
+        try:
+            search_request = formulate_request(user_note)
+            logger.info("💡 Formulated structured search request:\n%s", search_request)
+        except Exception as e:
+            logger.warning("⚠️ Failed to formulate request: %s", e)
+            search_request = {}
 
-    # Format results
-    formatted_packages = format_packages(raw_search_results)
-    package_text_blocks = [entry["details"] for entry in formatted_packages]
-
-    # Db insert for recommendation event and items
-    request_embedding = await generate_embeddings(user_note)
-    recommendation_event_id = await insert_recommendation_event(
-        session_id, request_embedding, user_note
-    )
-    if recommendation_event_id and formatted_packages:
-        for idx, package in enumerate(formatted_packages):
-            memory_embedding = await generate_embeddings(
-                f"User Request: {user_note}\nPackage Details: {package}"
+        # Fetch raw results
+        try:
+            raw_search_results = await smart_package_search(
+                user_request=search_request,
+                session_id=session_id,
+                prospect_id=prospect_id,
+                exclude_previous_ids=exclude_previous_ids,
             )
-            await insert_recommendation_item(
-                session_id,
-                recommendation_event_id,
-                package["package_id"],
-                raw_search_results[idx],
-                memory_embedding,
+        except Exception as e:
+            logger.error("❌ Smart package search failed: %s", e)
+            raw_search_results = []
+
+        # Format results
+        try:
+            formatted_packages = format_packages(raw_search_results)
+            package_text_blocks = [entry["details"] for entry in formatted_packages]
+            logger.info("📄 Formatted package results:\n%s", "\n\n".join(package_text_blocks))
+        except Exception as e:
+            logger.warning("⚠️ Failed formatting packages: %s", e)
+            formatted_packages = []
+
+        # Insert recommendation events/items
+        try:
+            request_embedding = await generate_embeddings(user_note)
+            recommendation_event_id = await insert_recommendation_event(
+                session_id, request_embedding, user_note
             )
 
-    # Generate summary message
-    num_packages = len(raw_search_results)
-    if num_packages == 0:
-        summary_message = "⚠️ No packages found matching the criteria."
-        logger.info(summary_message)
-    elif num_packages == 1:
-        summary_message = "✅ 1 package found matching the criteria."
-        logger.info(summary_message)
-    else:
-        summary_message = f"✅ {num_packages} packages found matching the criteria."
-        logger.info(summary_message)
+            if recommendation_event_id and formatted_packages:
+                logger.info("💾 Inserting recommendation items into memory...")
+                for idx, package in enumerate(formatted_packages):
+                    try:
+                        memory_embedding = await generate_embeddings(
+                            f"User Request: {user_note}\nPackage Details: {package}"
+                        )
+                        await insert_recommendation_item(
+                            session_id,
+                            recommendation_event_id,
+                            package["package_id"],
+                            raw_search_results[idx],
+                            memory_embedding,
+                        )
+                    except Exception as e:
+                        logger.warning("⚠️ Failed inserting package %s: %s", package.get("package_id"), e)
 
-    logger.info("📄 Formatted package results:\n%s", "\n\n".join(package_text_blocks))
+                logger.info("✅ Recommendation items saved successfully.")
+        except Exception as e:
+            logger.warning("⚠️ Failed saving recommendation event/items: %s", e)
 
-    return {
-        "results": formatted_packages,
-        "message": summary_message,
-    }
+        # Summary message
+        try:
+            num_packages = len(raw_search_results)
+            if num_packages == 0:
+                response["message"] = "⚠️ No packages found matching the criteria."
+                logger.warning(response["message"])
+            elif num_packages == 1:
+                response["message"] = "✅ 1 package found matching the criteria."
+                logger.info(response["message"])
+            else:
+                response["message"] = f"✅ {num_packages} packages found matching the criteria."
+                logger.info(response["message"])
+
+            response["results"] = formatted_packages
+        except Exception as e:
+            logger.warning("⚠️ Failed generating summary message: %s", e)
+
+        logger.info("🔍 DB scan completed for prospect %s", prospect_id)
+
+    except Exception as e:
+        logger.critical("❌ Unexpected error in db_scanning: %s", e)
+
+    return response

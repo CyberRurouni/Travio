@@ -1,6 +1,7 @@
 from typing import Dict, Any
 from core import call_openai_safe
 
+
 def formulate_request(body: str) -> Dict[str, Any]:
     prompt = f"""
 You are an information extraction engine for a travel recommendation system.
@@ -34,6 +35,10 @@ STRICT EXTRACTION RULES
 6. If unsure, leave the field empty or null.
 7. Do NOT invent categories, currencies, or durations.
 8. Preferences about “vibe”, “feel”, or “avoidance” go into vague_exclusion.
+9. Extract result limit if explicitly mentioned (e.g. “provide/show 3 options” → limit: 3).
+10. If limit is not provided, default to 5.
+11. If limit exceeds 10, normalize it to 10.
+12. If limit is invalid, negative, or zero → default to 5.
 
 ────────────────────────────────────
 EXPECTED OUTPUT SCHEMA (MANDATORY)
@@ -50,7 +55,8 @@ EXPECTED OUTPUT SCHEMA (MANDATORY)
     "ideal_for": {{ "include": [] }},
     "includes": {{ "include": [] }}
   }},
-  "vague_exclusion": ""
+  "vague_exclusion": "",
+  "limit": 5
 }}
 
 ────────────────────────────────────
@@ -62,6 +68,9 @@ NORMALIZATION GUIDELINES
 - “corporate retreat” → category: ["corporate"]
 - “adventure” → category: ["adventure"]
 - “around a week” → duration_days: min 6, max 8
+- “show/provide 3 options” → limit: 3
+- “top 8 packages” → limit: 8
+- “a few options” → DO NOT infer → leave missing
 - “no / avoid X” → exclude if X is a hard category
 - “avoid vibe / climate / theme” → vague_exclusion
 
@@ -106,13 +115,14 @@ OUTPUT:
       "include": []
     }}
   }},
-  "vague_exclusion": ""
+  "vague_exclusion": "",
+  "limit": 5,
 }}
 
 Example 2
 EMAIL:
 "Looking for something fun and cultural, maybe Europe or Asia.
-Not too touristy, no snowy destinations."
+Not too touristy, no snowy destinations. Suggest me top three options"
 
 OUTPUT:
 {{
@@ -144,7 +154,8 @@ OUTPUT:
       "include": []
     }}
   }},
-  "vague_exclusion": "touristy places, snowy destinations"
+  "vague_exclusion": "touristy places, snowy destinations",
+  "limit": 3,
 }}
 
 ────────────────────────────────────
@@ -154,25 +165,28 @@ EMAIL TO ANALYZE
 
 Return ONLY the JSON object.
 """
+
     result = call_openai_safe(
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=400,
+        max_tokens=500,
         response_format="json",
         fallback_response={
-          "main_query": "",
-          "constraints": {
-            "category": {"include": [], "exclude": []},
-            "destination": {"include": [], "exclude": []},
-            "price_amount": {"min": None, "max": None},
-            "price_currency": {"include": []},
-            "duration_days": {"min": None, "max": None},
-            "ideal_for": {"include": []},
-            "includes": {"include": []}
-          },
-          "vague_exclusion": ""
+            "main_query": "",
+            "constraints": {
+                "category": {"include": [], "exclude": []},
+                "destination": {"include": [], "exclude": []},
+                "price_amount": {"min": None, "max": None},
+                "price_currency": {"include": []},
+                "duration_days": {"min": None, "max": None},
+                "ideal_for": {"include": []},
+                "includes": {"include": []},
+            },
+            "vague_exclusion": "",
+            "limit": 5,
         },
     )
 
+    # If model returned string, try parsing
     if isinstance(result, str):
         import json
         try:
@@ -187,9 +201,28 @@ Return ONLY the JSON object.
                     "price_currency": {"include": []},
                     "duration_days": {"min": None, "max": None},
                     "ideal_for": {"include": []},
-                    "includes": {"include": []}
+                    "includes": {"include": []},
                 },
-                "vague_exclusion": ""
+                "vague_exclusion": "",
+                "limit": 5,
             }
 
+    # ===============================
+    # HARD LIMIT ENFORCEMENT LAYER
+    # ===============================
+    limit = result.get("limit", 5)
+
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 5
+
+    if limit <= 0:
+        limit = 5
+    elif limit > 10:
+        limit = 10
+
+    result["limit"] = limit
+
     return result
+

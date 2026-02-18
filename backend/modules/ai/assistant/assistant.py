@@ -35,9 +35,15 @@ class Assistant:
         chat_history, is_prospect_first_msg = result or ([], True)
 
         chat_history_clean = [
-            {"sender": m.get("sender"), "text": m.get("text")}
-            for m in chat_history
+            {"sender": m.get("sender"), "text": m.get("text")} for m in chat_history
         ]
+
+        logger.info(
+            "📜 Chat History | 👤 Prospect=%s | 🧩 Session=%s | Messages=%s",
+            self.prospect_id,
+            self.session.session_id,
+            chat_history_clean,
+        )
 
         # -------------------- Intent analysis --------------------
         intent_guard_data = {"first_impression": first_impression}
