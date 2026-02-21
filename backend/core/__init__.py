@@ -57,6 +57,9 @@ from modules.ai.assistant.assistant import Assistant
 from modules.ai.recommendation.recommend import db_scanning, get_packages_schema
 from modules.ai.recommendation.components.reference import ReferenceMemory
 
+# Essence
+from modules.ai.essence.compaction import compact_dialogue_state
+
 # ----------
 # Interface
 # ----------

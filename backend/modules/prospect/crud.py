@@ -55,7 +55,7 @@ async def register_prospect(
         return None
 
 
-async def upsert_prospect_presence(
+async def touch_prospect_presence(
     prospect_id: UUID, channel_type: str, raw_identifier: str
 ):
     """
@@ -74,7 +74,7 @@ async def upsert_prospect_presence(
             "p_raw_identifier": raw_identifier,
         }
 
-        result = await db_rpc("upsert_prospect_presence", params=payload)
+        result = await db_rpc("touch_prospect_presence", params=payload)
 
         logger.info(
             "✅ Prospect presence upserted | Prospect ID=%s | Channel=%s",

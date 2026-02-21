@@ -86,12 +86,12 @@ class EmailService:
                     )
 
                 results = await asyncio.gather(*tasks, return_exceptions=True)
-                
+
                 # Log any task failures
                 for i, result in enumerate(results):
                     if isinstance(result, Exception):
                         logger.error(f"❌ Email processing task {i} failed: {result}")
-            
+
             except Exception as e:
                 logger.error(f"❌ Email consumer loop error: {e}", exc_info=True)
                 await asyncio.sleep(1)  # Prevent tight error loop
@@ -120,6 +120,7 @@ class EmailService:
             Session,
             Assistant,
         )
+        from ..helpers.utils import strip_email_reply_tail
 
         email_id, content = email
         logger.info(f"📩 Processing email | ID={email_id}")
@@ -148,6 +149,9 @@ class EmailService:
             sender_name = content.get("sender_name") or "Unknown"
             subject = content.get("subject") or "No Subject"
             body = content.get("body") or ""
+
+            # ─── Strip email reply tail ──────────────────────────
+            body = strip_email_reply_tail(body=body)
 
             # ─── Classify sender intent ───────────────────────────
             classification = classify_sender(
@@ -188,7 +192,6 @@ class EmailService:
             if not agency_id or not prospect_id:
                 logger.error("❌ Prospect registration failed")
                 return
-            
 
             # ─── Prospect presence update ────────────────────────
             await prospect.mark_presence(channel_type="email")

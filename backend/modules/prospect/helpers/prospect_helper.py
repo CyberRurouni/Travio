@@ -4,7 +4,7 @@ import logging
 from uuid import UUID
 from datetime import timedelta
 from core import session_broker, prospects_broker, safe_redis_operation
-from ..crud import fetch_agency_id_by_email, register_prospect, upsert_prospect_presence
+from ..crud import fetch_agency_id_by_email, register_prospect, touch_prospect_presence
 
 logger = logging.getLogger("PROSPECT_HELPER")
 
@@ -113,7 +113,7 @@ class ProspectHelper:
             return
 
         try:
-            await upsert_prospect_presence(
+            await touch_prospect_presence(
                 prospect_id=prospect_id,
                 channel_type=channel_type.lower(),
                 raw_identifier=identifier,

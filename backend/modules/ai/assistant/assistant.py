@@ -1,5 +1,3 @@
-# assistant.py
-
 import logging
 from typing import Optional
 from datetime import timedelta
@@ -34,15 +32,11 @@ class Assistant:
         )
         chat_history, is_prospect_first_msg = result or ([], True)
 
-        chat_history_clean = [
-            {"sender": m.get("sender"), "text": m.get("text")} for m in chat_history
-        ]
-
         logger.info(
             "📜 Chat History | 👤 Prospect=%s | 🧩 Session=%s | Messages=%s",
             self.prospect_id,
             self.session.session_id,
-            chat_history_clean,
+            chat_history,
         )
 
         # -------------------- Intent analysis --------------------
@@ -52,14 +46,14 @@ class Assistant:
             analysis = TravelIntentGuard.analyze_conversation(
                 subject="",
                 latest_msg=msg,
-                chat_context=chat_history_clean,
+                chat_context=chat_history,
             )
             if analysis:
                 intent_guard_data.update(analysis)
 
         # -------------------- Initial AI Response --------------------
         ai_result = generate_ai_response(
-            chat_container=chat_history_clean,
+            chat_container=chat_history,
             intent_guard_data=intent_guard_data,
         )
 

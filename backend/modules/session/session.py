@@ -8,21 +8,29 @@ logger = logging.getLogger("SESSION")
 
 
 class Session:
-    TOTAL_WORDS_THRESHOLD = 350
+    COMPACTION_TRIGGER_WORD_LIMIT = 1000
 
     def __init__(self, agency_id: str, prospect_id: str):
         self.agency_id = agency_id
         self.prospect_id = prospect_id
         self.session_id: UUID | None = None
         self._cached_first_impression: dict | None = None
+        self._compaction_disabled: bool = False
+
+    # ---------------------------------------------------------------------
+    # Session Initialization
+    # ---------------------------------------------------------------------
 
     @classmethod
     async def initiate_session(
         cls, agency_id: str, prospect_id: str, msg: str, subject: str = "Not Provided"
     ) -> Optional["Session"]:
         """
-        Initiate or retrieve a session. Resolves cache → DB → create new session.
+        Initiate or retrieve a session.
+        Resolution order:
+        Cache → DB → Create new session
         """
+
         from core import TravelIntentGuard
 
         if not agency_id or not prospect_id:
@@ -31,14 +39,15 @@ class Session:
 
         ttl = timedelta(days=14)
 
-        # -------------------- Resolve existing session --------------------
+        # -------------------- Resolve Existing Session --------------------
+
         session_id, first_impression = await SessionHelper.resolve_session(
             prospect_id, ttl
         )
 
         if session_id:
             session = cls(agency_id, prospect_id)
-            session.session_id = str(session_id) 
+            session.session_id = str(session_id)
             session._cached_first_impression = first_impression
 
             logger.info(
@@ -49,7 +58,8 @@ class Session:
 
             return session
 
-        # -------------------- Cannot create new session without message --------------------
+        # -------------------- Prevent Creation Without Message --------------------
+
         if not msg:
             logger.error(
                 "❌ Cannot create session: missing initial message | Prospect ID=%s",
@@ -57,7 +67,8 @@ class Session:
             )
             return None
 
-        # -------------------- AI first impression --------------------
+        # -------------------- AI First Impression --------------------
+
         try:
             result = TravelIntentGuard.analyze_conversation(
                 subject=subject,
@@ -87,16 +98,15 @@ class Session:
             intent = "other"
             confidence = 0.0
 
-        # -------------------- Create session in DB & cache --------------------
+        # -------------------- Create Session --------------------
+
         payload = {
             "first_impression": first_impression,
             "intent": intent,
             "intent_confidence": confidence,
         }
 
-        session_id = await SessionHelper.create_session_in_db(
-            prospect_id, payload, ttl
-        )
+        session_id = await SessionHelper.create_session_in_db(prospect_id, payload, ttl)
 
         if not session_id:
             logger.error(
@@ -105,20 +115,21 @@ class Session:
             )
             return None
 
-        # -------------------- Initialize session object  --------------------
         session = cls(agency_id, prospect_id)
-
-        session.session_id = str(session_id) 
+        session.session_id = str(session_id)
         session._cached_first_impression = first_impression
 
         logger.info(
-            "✅ New session created and object initialized | Session ID=%s | Prospect ID=%s",
+            "✅ New session created | Session ID=%s | Prospect ID=%s",
             session.session_id,
             prospect_id,
         )
 
         return session
 
+    # ---------------------------------------------------------------------
+    # Chat Container
+    # ---------------------------------------------------------------------
 
     async def chat_container(
         self,
@@ -127,9 +138,19 @@ class Session:
         retrieve: bool = False,
     ):
         """
-        Handle a chat message: store in Redis, persist in DB, trigger threshold actions.
-        Returns chat history and is_prospect_first_msg flag if retrieve=True.
+        Handles:
+        - Message buffering (Redis)
+        - DB persistence
+        - Recursive dialogue compaction
+        - Retrieval
+
+        Returns:
+            - Compressed essence (if compaction triggered)
+            - Full chat history (if retrieve=True)
         """
+
+        from core import compact_dialogue_state
+
         if not self.session_id:
             logger.error("❌ chat_container called without session_id")
             return
@@ -137,34 +158,79 @@ class Session:
         sender_lower = sender.lower()
         text = text or ""
 
-        # -------------------- Retrieve only --------------------
+        # -------------------- Retrieve Only --------------------
+
         if retrieve and not text.strip():
             chat_history, is_prospect_first_msg = (
                 await SessionHelper.fetch_chat_history(self.session_id)
             )
+
             logger.info(
                 "ℹ️ Retrieved chat history | Session=%s | HasProspectInitiated=%s",
                 self.session_id,
                 is_prospect_first_msg,
             )
+
             return chat_history, is_prospect_first_msg
 
-        # -------------------- Append message --------------------
-        words = len(text.split())
-        msg_data = {"sender": sender, "text": text, "words": words}
-        total_words = SessionHelper.add_message_to_chat_buffer(self.session_id, msg_data)
-        await SessionHelper.persist_message(self.session_id, text, sender_lower)
+        # -------------------- Append Message --------------------
 
-        # -------------------- Trigger AI essence extraction --------------------
-        if total_words >= self.TOTAL_WORDS_THRESHOLD and sender_lower == "Travio":
+        words = len(text.split())
+
+        msg_data = {
+            "sender": sender,
+            "text": text,
+            "words": words,
+        }
+
+        total_words = SessionHelper.add_message_to_chat_buffer(
+            self.session_id,
+            msg_data,
+        )
+
+        await SessionHelper.persist_message(
+            self.session_id,
+            text,
+            sender_lower,
+        )
+
+        # -------------------- Trigger Dialogue Compaction --------------------
+
+        if (
+            total_words >= self.COMPACTION_TRIGGER_WORD_LIMIT
+            and not self._compaction_disabled
+        ):
+
             logger.info(
-                "⚡ Word threshold reached | Trigger AI essence extraction | Session=%s | TotalWords=%d",
+                "⚡ Compaction threshold reached | Session=%s | TotalWords=%d",
                 self.session_id,
                 total_words,
             )
-            # TODO: Call summarization/extraction here
 
-        # -------------------- Return full chat history if requested --------------------
+            chat_history, _ = await SessionHelper.fetch_chat_history(self.session_id)
+
+            compressed_chat_history, disable_compaction = compact_dialogue_state(chat_history)
+
+            if disable_compaction:
+                logger.error(
+                    "🛑 Compaction disabled for session | Session=%s",
+                    self.session_id,
+                )
+                self._compaction_disabled = True
+                return chat_history
+
+            # Persist the compressed chat (DB + Redis)
+            await SessionHelper.persist_compacted_chat(self.session_id, compressed_chat_history)
+
+            logger.info(
+                "✅ Compaction successful | Session=%s",
+                self.session_id,
+            )
+
+            return compressed_chat_history
+
+        # -------------------- Retrieve After Append --------------------
+
         if retrieve:
             chat_history, is_prospect_first_msg = (
                 await SessionHelper.fetch_chat_history(self.session_id)

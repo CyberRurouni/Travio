@@ -171,10 +171,10 @@ CREATE TABLE sessions (
     change_in_intent BOOLEAN DEFAULT false,
     intent_history JSONB DEFAULT '[]',
     intent_confidence NUMERIC(3,2),
-    essence TEXT,                       -- distilled goal
     constraints TEXT,                   -- budget, time, visa, etc
     decision_pending BOOLEAN DEFAULT false,
     initiated_at TIMESTAMPTZ DEFAULT now(),
+    last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     ended_at TIMESTAMPTZ,
     is_ended BOOLEAN DEFAULT false
 );
@@ -329,6 +329,9 @@ ON prospect_presence (prospect_id);
 CREATE INDEX idx_presence_last_contacted_at
 ON prospect_presence (last_contacted_at);
 
+CREATE UNIQUE INDEX prospect_presence_unique_channel
+ON prospect_presence (prospect_id, channel_type);
+
 
 /* ---------- Prospect Interests ---------- */
 CREATE INDEX idx_interests_agency_prospect
@@ -342,7 +345,7 @@ ON prospect_interests (session_id);
 
 
 /* ---------- Sessions ---------- */
-CREATE INDEX idx_sessions_active_prospect
+CREATE UNIQUE INDEX idx_sessions_active_prospect
 ON sessions (prospect_id)
 WHERE ended_at IS NULL;
 
@@ -420,7 +423,7 @@ $$;
 
 
 /* ----------- Handling Prospect Presence ----------- */
-CREATE OR REPLACE FUNCTION upsert_prospect_presence(
+CREATE OR REPLACE FUNCTION touch_prospect_presence(
     p_prospect_id UUID,
     p_channel_type TEXT,
     p_raw_identifier TEXT
@@ -446,12 +449,99 @@ BEGIN
     DO UPDATE
        SET last_contacted_at = now();
 
-    -- 2️⃣ Delete rows older than 7 days (silence threshold)
+END;
+$$;
+
+
+/* ----------- Prune Stale Presence ----------- */
+CREATE OR REPLACE FUNCTION prune_stale_presence()
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
     DELETE FROM prospect_presence
     WHERE last_contacted_at < now() - interval '7 days';
 END;
 $$;
 
+/* ----------- Atomic Initiation Of Sessions ----------- */
+CREATE OR REPLACE FUNCTION initiate_session(
+    p_prospect_id UUID,
+    p_intent TEXT DEFAULT NULL,
+    p_intent_confidence NUMERIC(3,2) DEFAULT NULL,
+    p_first_impression JSONB DEFAULT NULL,
+    p_constraints TEXT DEFAULT NULL
+)
+RETURNS UUID
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_session_id UUID;
+BEGIN
+    -- Try insert
+    INSERT INTO sessions (
+        prospect_id,
+        intent,
+        intent_confidence,
+        first_impression,
+        constraints,
+        change_in_intent,
+        decision_pending,
+        is_ended
+    )
+    VALUES (
+        p_prospect_id,
+        p_intent,
+        p_intent_confidence,
+        p_first_impression,
+        p_constraints,
+        false,
+        false,
+        false
+    )
+    ON CONFLICT DO NOTHING
+    RETURNING id INTO v_session_id;
+
+    -- If insert didn't happen, fetch existing active session
+    IF v_session_id IS NULL THEN
+        SELECT id INTO v_session_id
+        FROM sessions
+        WHERE prospect_id = p_prospect_id
+          AND is_ended = false;
+    END IF;
+
+    RETURN v_session_id;
+END;
+$$;
+
+
+/* ----------- Update Session Activity ----------- */
+CREATE OR REPLACE FUNCTION touch_session(
+    p_session_id UUID
+)
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE sessions
+    SET last_activity_at = now()
+    WHERE id = p_session_id
+      AND ended_at IS NULL;
+END;
+$$;
+
+/* ----------- End Stale Sessions ----------- */
+CREATE OR REPLACE FUNCTION end_stale_sessions()
+RETURNS VOID
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE sessions
+    SET ended_at = now()
+    WHERE ended_at IS NULL
+      AND last_activity_at < now() - interval '14 days';
+END;
+$$;
 
 /* ----------- Auto Increment Msg Sequence ----------- */
 CREATE OR REPLACE FUNCTION auto_incr_msg_seq()

@@ -1,26 +1,32 @@
 import logging
 from uuid import UUID
 from typing import Any, List, Dict, Optional, Union
-from core import db_insert, db_select, db_rpc
+from core import db_insert, db_select, db_rpc, db_delete
 
 logger = logging.getLogger("SESSION_CRUD")
 
-async def initiate_session(
-    prospect_id: str,
-    payload: Dict,
-) -> UUID | None:
+
+from typing import Dict, Any
+from uuid import UUID
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+async def initiate_session(prospect_id: str, payload: Dict[str, Any]) -> UUID | None:
     """
-    Inserts a new session into the database for a given prospect.
+    Initiates a session for a prospect, returning the active session ID.
+    Uses the atomic Postgres function 'initiate_session' via RPC.
 
     Args:
         prospect_id (str): UUID of the prospect
-        intent (str): Initial travel intent (e.g., 'exploring', 'honeymoon')
-        extra_fields (dict, optional): Extra fields to include in the session
-            e.g., {'intent_history': [...]}
+        payload (dict): Additional session metadata. Only 'intent', 'intent_confidence',
+                        'first_impression', and 'constraints' are used optionally.
 
     Returns:
-        str | None: Newly created session ID, or None if failed
+        UUID | None: ID of the active session, or None if creation failed
     """
+
     if not prospect_id or not payload.get("intent"):
         logger.error(
             "❌ Cannot initiate session: missing prospect_id or intent | prospect_id=%s, intent=%s",
@@ -30,58 +36,47 @@ async def initiate_session(
         return None
 
     try:
-        # Base session data
+        # Prepare parameters for the atomic RPC function
         session_data: Dict[str, Any] = {
             "prospect_id": prospect_id,
             "intent": payload.get("intent"),
-            "change_in_intent": False,
             "intent_confidence": payload.get("intent_confidence"),
             "first_impression": payload.get("first_impression"),
-            "essence": None,
             "constraints": None,
-            "decision_pending": False,
-            "is_ended": False,
         }
 
-        # Insert into DB
-        result = await db_insert(
-            table="sessions",
-            data=session_data,
-            return_mode="one",  # return only the inserted row
-        )
+        # Call atomic Postgres function via RPC
+        result = await db_rpc("initiate_session", session_data)
 
-        if not result or not isinstance(result, dict):
-            logger.error(
-                "❌ Failed to create session in DB | Prospect ID=%s | Intent=%s",
-                prospect_id,
-                payload.get("intent"),
-            )
-            return None
+        # Postgres RPC returns a dict with the session ID
+        session_id: str | None = None
+        if isinstance(result, dict):
+            session_id = result.get("id")
+        elif isinstance(result, list) and len(result) > 0:
+            # Sometimes Supabase returns a list of rows
+            session_id = result[0].get("id")
 
-        session_id: UUID | None = result.get("id")
         if not session_id:
             logger.error(
-                "❌ Session inserted but no ID returned | Prospect ID=%s | Intent=%s",
+                "❌ Failed to get session ID from RPC | Prospect ID=%s | payload=%s",
                 prospect_id,
-                payload.get("intent"),
+                payload,
             )
             return None
 
         logger.info(
-            "✅ Session created successfully | Session ID=%s | Prospect ID=%s | Intent=%s",
+            "✅ Active session returned | Session ID=%s | Prospect ID=%s",
             session_id,
             prospect_id,
-            payload.get("intent"),
         )
 
-        return session_id
+        return UUID(session_id)
 
     except Exception as e:
-        logger.error(
+        logger.exception(
             "❌ Exception while initiating session | Prospect ID=%s | Error=%s",
             prospect_id,
             e,
-            exc_info=True,
         )
         return None
 
@@ -278,3 +273,45 @@ async def fetch_session_chats(session_id: str) -> list[dict[str, Any]]:
             exc_info=True,
         )
         return []
+
+
+async def delete_all_chats(session_id: str) -> bool:
+    """
+    Permanently deletes all chat messages for a given session from the database.
+
+    Args:
+        session_id (str): UUID of the session
+
+    Returns:
+        bool: True if deletion succeeded, False otherwise
+    """
+    if not session_id:
+        logger.error("❌ Cannot delete chats: missing session_id")
+        return False
+
+    try:
+        result = await db_delete(
+            table="chats",
+            filters={"session_id": session_id},
+            returning="none",  # hard delete, do not return any rows
+        )
+
+        if result is True:
+            logger.info("✅ All chat messages deleted | Session ID=%s", session_id)
+            return True
+
+        logger.warning(
+            "⚠️ db_delete returned unexpected value | Session ID=%s | Result=%s",
+            session_id,
+            result,
+        )
+        return False
+
+    except Exception as e:
+        logger.error(
+            "❌ Exception while deleting chat messages | Session ID=%s | Error=%s",
+            session_id,
+            e,
+            exc_info=True,
+        )
+        return False
