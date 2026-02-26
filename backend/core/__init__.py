@@ -3,8 +3,10 @@
 # ---------
 
 # Config
+from Python.SaaS.Travio.backend.modules.session.helpers import session_helper
 from genesis.config import client, supabase, async_supabase, get_async_supabase
 from genesis.config import fetch_unread_emails
+from genesis.config import AGENT_EMAIL
 
 ### ==========
 ### Core
@@ -36,6 +38,9 @@ from .db.crud import (
 # Modules
 # ---------
 
+# Agent
+from modules.agent.case_agent import CaseAgent, is_internal_agent_email
+
 # Evaluation
 from modules.ai.evaluation.eval import classify_sender
 from modules.ai.evaluation.re_eval import send_clarification_email
@@ -43,9 +48,12 @@ from modules.ai.evaluation.re_eval import send_clarification_email
 # Intent Guard/Analyzer
 from modules.ai.intent_guard.engine import TravelIntentGuard
 
-# Session
+# Prospect
 from modules.prospect.prospect import HandleProspect
+
+# Session
 from modules.session.session import Session
+from modules.session.helpers.session_helper import SessionHelper
 
 # Follow Up
 from modules.followup.followup import realtime_followup_handler

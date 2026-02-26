@@ -26,6 +26,7 @@ logger.addHandler(handler)
 load_dotenv()
 EMAIL = os.getenv("EMAIL") or ""
 PASSWORD = (os.getenv("PASSWORD") or "").strip()
+AGENT_EMAIL = os.getenv("AGENT_EMAIL") or ""
 
 IMAP_SERVER = "imap.gmail.com"  # Gmail IMAP server
 IDLE_TIMEOUT = 60 * 25  # 25 minutes; Gmail requires exiting IDLE periodically

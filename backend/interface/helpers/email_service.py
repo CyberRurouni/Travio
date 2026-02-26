@@ -113,12 +113,15 @@ class EmailService:
         """
         from core import (
             emails_stream,
+            AGENT_EMAIL,
             classify_sender,
             send_clarification_email,
+            is_internal_agent_email,
             HandleProspect,
             InstanceRegistry,
             Session,
             Assistant,
+            CaseAgent,
         )
         from ..helpers.utils import strip_email_reply_tail
 
@@ -152,6 +155,27 @@ class EmailService:
 
             # ─── Strip email reply tail ──────────────────────────
             body = strip_email_reply_tail(body=body)
+
+            # ─── Guard: internal agent email ───────────────────────
+            if is_internal_agent_email(sender_email):
+                logger.info(f"👤 Email from internal agent | Email={sender_email}")
+
+                # ─── Agent lifecycle ──────────────────────────────
+                case_agent_registry = InstanceRegistry(ttl=timedelta(hours=1))
+                case_agent = await case_agent_registry.get_or_create(
+                    key=sender_email,
+                    factory=CaseAgent,
+                    agent_email=sender_email,
+                    message=body,
+                    subject=subject,
+                    factory_type="async",
+                )
+
+                # ─── Execute agent final message flow ─────────────────
+                await case_agent.final_message()
+
+                # ─── Done processing internal agent email ─────────────
+                return
 
             # ─── Classify sender intent ───────────────────────────
             classification = classify_sender(
@@ -232,7 +256,7 @@ class EmailService:
                 prospect_email=sender_email,
                 msg=body,
                 first_impression=session._cached_first_impression,
-                agent_email=str(os.getenv("AGENT_EMAIL")),
+                agent_email=AGENT_EMAIL,
             )
 
         except Exception:

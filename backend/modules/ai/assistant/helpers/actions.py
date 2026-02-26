@@ -1,6 +1,6 @@
 import logging
 import json
-from .utils import regenerate_and_send
+from .utils import regenerate_and_send, handle_outbound_message
 
 logger = logging.getLogger("ASSISTANT")
 logging.basicConfig(level=logging.INFO)
@@ -16,6 +16,8 @@ async def handle_action(
     agent_email,
     sender,
     intent_guard_data,
+    prospect_id,
+    session_id,
 ):
     from core import db_scanning
 
@@ -29,52 +31,20 @@ async def handle_action(
             case "general_response":
                 try:
                     logger.info(
-                        "💬 Processing general response | Prospect=%s", prospect_email
+                        "💬 Processing general response | Prospect=%s",
+                        prospect_email
                     )
 
-                    if public_message:
-                        try:
-                            await smtp_service.send_email(
-                                to=prospect_email,
-                                subject="Re: Your inquiry",
-                                body=public_message,
-                            )
-                            logger.info(
-                                "✅ Public response sent to prospect.\n📨 Message:\n%s",
-                                public_message,
-                            )
-                        except Exception as e:
-                            logger.warning("⚠️ Failed sending public response: %s", e)
-
-                        try:
-                            await assistant.session.chat_container(
-                                text=f"""[STATE_UPDATE]
-action_type: general_response
-status: success
-reason: Responded directly to prospect inquiry
-context: null
-results: null""",
-                                sender="system",
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                "⚠️ Failed updating AI session for general response: %s",
-                                e,
-                            )
-
-                    if internal_note:
-                        try:
-                            await assistant.session.chat_container(
-                                text=f"""[AI_MEMORY]
-{internal_note}""",
-                                sender="system",
-                            )
-                            logger.info(
-                                "📝 Internal note saved to AI memory:\n%s",
-                                internal_note,
-                            )
-                        except Exception as e:
-                            logger.warning("⚠️ Failed saving internal note: %s", e)
+                    await handle_outbound_message(
+                        assistant=assistant,
+                        smtp_service=smtp_service,
+                        logger=logger,
+                        prospect_email=prospect_email,
+                        public_message=public_message,
+                        internal_note=internal_note,
+                        sender = sender,
+                        log_prefix="💬 General response |",
+                    )
 
                 except Exception as e:
                     logger.error("❌ Error in general_response action: %s", e)
@@ -160,7 +130,7 @@ results: {json.dumps(scanning, indent=2)}""",
                         "❌ Error in database_scan/recommend_package action: %s", e
                     )
 
-            # -------------------- SEEK VALIDATION --------------------
+            # -------------------- SEEK HUMAN CONTACT --------------------
             case "connect_human_agent":
                 try:
                     note = action_details.get("note", "")
@@ -210,15 +180,16 @@ results: {json.dumps(scanning, indent=2)}""",
                     except Exception as e:
                         logger.warning("⚠️ Failed sending handoff email: %s", e)
 
-                    # 3️⃣ Log success state (no async tracking)
+                    # 3️⃣ Log success state
                     try:
                         await assistant.session.chat_container(
                             text=f"""[STATE_UPDATE]
             action_type: connect_human_agent
-            status: success
-            reason: Human agent notified (no async tracking in MVP)
+            status: email_sent
             context: {note}
-            results: null""",
+            reason: {reason}
+            results: Handoff email sent to agent
+            """,
                             sender="system",
                         )
                     except Exception as e:
@@ -399,6 +370,35 @@ results: null""",
 
                 except Exception as e:
                     logger.error("❌ Error in seek_booking action: %s", e)
+
+            # -------------------- Final Message --------------------
+            case "final_message":
+                from core import SessionHelper
+                try:
+                    logger.info(
+                        "🎯 Final message reached | Prospect=%s",
+                        prospect_email,
+                    )
+
+                    # Use shared handler for public message
+                    await handle_outbound_message(
+                        assistant=assistant,
+                        smtp_service=smtp_service,
+                        logger=logger,
+                        prospect_email=prospect_email,
+                        public_message=public_message,
+                        sender = sender,
+                        log_prefix="🎯 Final message |",
+                    )
+
+                    # End Session
+                    await SessionHelper.end_session(
+                        prospect_id=prospect_id,
+                        session_id=session_id
+                    )
+
+                except Exception as e:
+                    logger.error("❌ Error in final_message action: %s", e)
 
             # -------------------- UNKNOWN --------------------
             case _:

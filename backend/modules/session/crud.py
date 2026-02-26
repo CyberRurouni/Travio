@@ -185,6 +185,114 @@ async def fetch_ongoing_session(
         return None
 
 
+async def touch_session(session_id: str | UUID) -> bool:
+    """
+    Updates the last_activity_at timestamp of an active session
+    using the atomic Postgres RPC function `touch_session`.
+
+    This function should NOT be called directly by services.
+    Instead, it is typically triggered via a throttled mechanism
+    (e.g., Redis-based throttling) to avoid excessive DB writes.
+
+    Args:
+        session_id (str | UUID): UUID of the session
+
+    Returns:
+        bool: True if RPC executed successfully, False otherwise
+    """
+    if not session_id:
+        logger.error("❌ Cannot touch session: missing session_id")
+        return False
+
+    try:
+        # Ensure string UUID for RPC payload
+        if isinstance(session_id, UUID):
+            session_id = str(session_id)
+
+        payload = {"p_session_id": session_id}
+
+        result = await db_rpc("touch_session", payload)
+
+        # Postgres VOID function usually returns {}
+        if isinstance(result, dict):
+            logger.info(
+                "🫀 Session activity touched | Session ID=%s",
+                session_id,
+            )
+            return True
+
+        logger.warning(
+            "⚠️ Unexpected RPC response while touching session | Session ID=%s | Result=%s",
+            session_id,
+            result,
+        )
+        return False
+
+    except Exception as e:
+        logger.error(
+            "❌ Exception while touching session | Session ID=%s | Error=%s",
+            session_id,
+            e,
+            exc_info=True,
+        )
+        return False
+
+def end_session(session_id: str | UUID) -> bool:
+    """
+    Marks a session as ended by setting is_ended to True and updating ended_at timestamp.
+    Uses the atomic Postgres RPC function `end_session`.
+
+    Args:
+        session_id (str | UUID): UUID of the session to end
+    Returns:
+        bool: True if session was successfully ended, False otherwise
+    """
+    
+    if not session_id:
+        logger.error("❌ Cannot end session: missing session_id")
+        return False
+
+    try:
+        # Ensure string UUID for RPC payload
+        if isinstance(session_id, UUID):
+            session_id = str(session_id)
+
+        payload = {"p_session_id": session_id}
+
+        result = db_rpc("end_session", payload)
+
+        # Postgres function returns boolean (True if session was ended, False otherwise)
+        if isinstance(result, bool):
+            if result:
+                logger.info(
+                    "✅ Session ended successfully | Session ID=%s",
+                    session_id,
+                )
+                return True
+            else:
+                logger.warning(
+                    "⚠️ Session was not ended (already ended or not found) | Session ID=%s",
+                    session_id,
+                )
+                return False
+
+        logger.warning(
+            "⚠️ Unexpected RPC response while ending session | Session ID=%s | Result=%s",
+            session_id,
+            result,
+        )
+        return False
+
+    except Exception as e:
+        logger.error(
+            "❌ Exception while ending session | Session ID=%s | Error=%s",
+            session_id,
+            e,
+            exc_info=True,
+        )
+        return False
+
+
 async def create_session_message(
     session_id: str, msg: str, sender: str = "prospect"
 ) -> None:

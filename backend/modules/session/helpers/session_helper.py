@@ -5,7 +5,12 @@ from datetime import timedelta
 from uuid import UUID
 from typing import Optional
 from core import session_broker, safe_redis_operation
-from ..crud import fetch_ongoing_session, initiate_session as crud_initiate_session
+from ..crud import (
+    fetch_ongoing_session,
+    touch_session,
+    initiate_session as crud_initiate_session,
+    end_session as crud_end_session,
+)
 
 logger = logging.getLogger("SESSION")
 
@@ -37,6 +42,14 @@ class SessionHelper:
     @staticmethod
     def _chat_ttl_seconds() -> int:
         return 60 * 60  # 1 hour
+
+    @staticmethod
+    def _session_activity_throttle_key(session_id: str) -> str:
+        return f"session:{session_id}:activity_throttle"
+
+    @staticmethod
+    def _session_activity_throttle_ttl_seconds() -> int:
+        return 6 * 60 * 60  # 6 hours
 
     # -------------------- Session Cache --------------------
     @staticmethod
@@ -160,6 +173,59 @@ class SessionHelper:
         )
         return session_id
 
+    # -------------------- Touch Session Activity --------------------
+    @staticmethod
+    async def _throttled_touch_session_activity(session_id: str):
+        """
+        Updates session last_activity_at in DB,
+        but throttles updates using Redis so the DB
+        is hit at most once every 6 hours.
+
+        The Redis throttle key is only set if the DB update succeeds.
+        This ensures we do not suppress retries if the DB call fails.
+        """
+
+        throttle_key = SessionHelper._session_activity_throttle_key(session_id)
+        ttl = SessionHelper._session_activity_throttle_ttl_seconds()
+
+        already_touched = safe_redis_operation(session_broker.get, throttle_key)
+
+        if already_touched:
+            logger.debug(
+                "⏱️ Session activity throttled (Redis hit) | Session ID=%s",
+                session_id,
+            )
+            return
+
+        try:
+            success = await touch_session(session_id=session_id)
+
+            if success:
+                safe_redis_operation(
+                    session_broker.set,
+                    throttle_key,
+                    1,
+                    ex=ttl,
+                )
+
+                logger.info(
+                    "🫀 Session activity updated (DB hit) | Session ID=%s",
+                    session_id,
+                )
+            else:
+                logger.warning(
+                    "⚠️ Session activity update returned False | Session ID=%s",
+                    session_id,
+                )
+
+        except Exception as e:
+            logger.error(
+                "❌ Exception during session activity update | Session ID=%s | Error=%s",
+                session_id,
+                e,
+                exc_info=True,
+            )
+
     # -------------------- Resolve Session --------------------
     @staticmethod
     async def resolve_session(
@@ -215,6 +281,34 @@ class SessionHelper:
 
         logger.info("ℹ️ No existing session found | Prospect ID=%s", prospect_id)
         return None, None
+
+    # -------------------- End Session --------------------
+    @staticmethod
+    def end_session(prospect_id: str, session_id: str | UUID = None):
+        # Clear Redis cache
+        cache_key = SessionHelper._session_cache_key(prospect_id)
+        first_impression_key = SessionHelper._first_impression_cache_key(prospect_id)
+        safe_redis_operation(session_broker.delete, cache_key)
+        safe_redis_operation(session_broker.delete, first_impression_key)
+        logger.info(
+            "🧹 Cleared session cache in Redis | Prospect ID=%s | Session ID=%s",
+            prospect_id,
+            session_id,
+        )
+
+        # Call DB to mark session as ended
+        success = crud_end_session(session_id=session_id)
+        if not success:
+            logger.warning("⚠️ Failed to end session in DB | Session ID=%s", session_id)
+        else:
+            logger.info("✅ Session ended in DB | Session ID=%s", session_id)
+
+        # Log the session end
+        logger.info(
+            "🛑 Session ended | Prospect ID=%s | Session ID=%s",
+            prospect_id,
+            session_id,
+        )
 
     # -------------------- Chat Buffer --------------------
     @staticmethod
@@ -317,12 +411,35 @@ class SessionHelper:
 
         return chat_history, is_first_prospect_msg
 
+    # -------------------- Persist Message --------------------
     @staticmethod
     async def persist_message(session_id: str, text: str, sender: str):
+        """
+        Persists a chat message to the database and
+        triggers a throttled session activity update.
+
+        Session activity is updated at most once every 6 hours
+        using Redis-based throttling to prevent DB exhaustion.
+        """
         from ..crud import create_session_message
 
         try:
-            await create_session_message(session_id=session_id, sender=sender, msg=text)
+            # Persist message
+            await create_session_message(
+                session_id=session_id,
+                sender=sender,
+                msg=text,
+            )
+
+            logger.info(
+                "💾 Chat message persisted | Session=%s | Sender=%s",
+                session_id,
+                sender,
+            )
+
+            # Trigger throttled activity update
+            await SessionHelper._throttled_touch_session_activity(session_id)
+
         except Exception as e:
             logger.error(
                 "❌ Failed to persist chat message | Session=%s | Sender=%s | Error=%s",
@@ -352,7 +469,9 @@ class SessionHelper:
         # -------------------- Persist compacted messages to DB --------------------
         db_tasks = [
             create_session_message(
-                session_id=session_id, sender=msg.get("sender", ""), msg=msg.get("text", "")
+                session_id=session_id,
+                sender=msg.get("sender", ""),
+                msg=msg.get("text", ""),
             )
             for msg in essence
         ]

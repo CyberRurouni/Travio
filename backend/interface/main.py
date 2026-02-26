@@ -13,15 +13,10 @@ async def main():
     email_service = EmailService()
 
     # Start IMAP worker once (thread)
-    await email_service.start_imap_worker() 
+    await email_service.start_imap_worker()
 
-    await asyncio.gather(
-        realtime_followup_handler(),                 # async websocket
-        email_service.perpetual_email_processor(),   # async redis consumer
-    )
+    await email_service.perpetual_email_processor(),  # async redis consumer
 
 
 if __name__ == "__main__":
     asyncio.run(main())
-
-

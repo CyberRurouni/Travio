@@ -17,6 +17,7 @@ CREATE TABLE agencies (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     issued_email TEXT,         -- email used for identification
+    agent_email TEXT,         -- email used by agent to send emails
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -271,6 +272,9 @@ LEFT JOIN prospect_presence pp
 /* ---------- Agencies ---------- */
 CREATE INDEX idx_agencies_email_name
 ON agencies (issued_email, name);
+
+CREATE INDEX idx_agencies_agent_email
+ON agencies (agent_email);
 
 CREATE INDEX idx_agencies_created_at
 ON agencies (created_at);
@@ -527,6 +531,24 @@ BEGIN
     SET last_activity_at = now()
     WHERE id = p_session_id
       AND ended_at IS NULL;
+END;
+$$;
+
+/* ----------- Atomic End Session ----------- */
+CREATE OR REPLACE FUNCTION end_session(
+    p_session_id UUID
+)
+RETURNS BOOLEAN
+LANGUAGE plpgsql
+AS $$
+BEGIN
+    UPDATE sessions
+    SET ended_at = now(),
+        is_ended = true
+    WHERE id = p_session_id
+      AND ended_at IS NULL;
+
+    RETURN FOUND;
 END;
 $$;
 

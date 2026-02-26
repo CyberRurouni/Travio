@@ -24,6 +24,8 @@ class Assistant:
         msg: str,
         first_impression: dict,
         sender: str = "Travio",
+        agent_message: bool = False,
+        final_message: bool = False,
     ):
 
         # -------------------- Retrieve chat history --------------------
@@ -40,9 +42,11 @@ class Assistant:
         )
 
         # -------------------- Intent analysis --------------------
-        intent_guard_data = {"first_impression": first_impression}
+        intent_guard_data = {}
+        if first_impression:
+            intent_guard_data = {"first_impression": first_impression}
 
-        if not is_prospect_first_msg:
+        if not is_prospect_first_msg and not agent_message:
             analysis = TravelIntentGuard.analyze_conversation(
                 subject="",
                 latest_msg=msg,
@@ -54,7 +58,8 @@ class Assistant:
         # -------------------- Initial AI Response --------------------
         ai_result = generate_ai_response(
             chat_container=chat_history,
-            intent_guard_data=intent_guard_data,
+            intent_guard_data=intent_guard_data if intent_guard_data else None,
+            final_message=final_message,
         )
 
         action_type = ai_result.get("actions", {}).get("type")
@@ -77,6 +82,8 @@ class Assistant:
             agent_email=agent_email,
             sender=sender,
             intent_guard_data=intent_guard_data,
+            prospect_id= self.prospect_id,
+            session_id= self.session.session_id
         )
 
         logger.info(
