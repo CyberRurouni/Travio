@@ -1,5 +1,9 @@
+import logging
+from typing import List, Dict
 from datetime import timedelta
 from .response import generate_ai_response
+
+logger = logging.getLogger("ASSISTANT")
 
 
 async def get_smtp_service():
@@ -13,6 +17,41 @@ async def get_smtp_service():
     )
 
 
+def log_chat_history_readable(
+    chat_history: List[Dict], prospect_id: str, session_id: str
+):
+    """
+    Logs chat history in a sequential, human-readable format.
+    Includes Prospect ID and Session ID for meticulous tracking.
+    Suitable for debugging purposes.
+    """
+    if not chat_history:
+        logger.info(
+            "📜 Chat History is empty | 👤 Prospect=%s | 🧩 Session=%s",
+            prospect_id,
+            session_id,
+        )
+        return
+
+    logger.info(
+        "📜 Chat History (Readable Version) | 👤 Prospect=%s | 🧩 Session=%s",
+        prospect_id,
+        session_id,
+    )
+
+    for entry in chat_history:
+        sender = entry.get("sender", "unknown").capitalize()
+        text = entry.get("text", "").replace("\r\n", "\n").strip()
+
+        # Differentiate system/state updates clearly
+        if sender == "System":
+            logger.info("----- SYSTEM LOG -----")
+            logger.info(text)
+            logger.info("---------------------")
+        else:
+            logger.info(f"{sender}: {text}\n")
+
+
 async def handle_outbound_message(
     *,
     assistant,
@@ -21,9 +60,9 @@ async def handle_outbound_message(
     prospect_email: str,
     public_message: str | None = None,
     internal_note: str | None = None,
-    subject: str = "Re: Your inquiry",
+    subject: str,
     log_prefix: str = "",
-    sender=str | "Travio",
+    sender: str = "Travio",
     state_action_type: str | None = None,
     state_reason: str | None = None,
 ):
@@ -57,7 +96,7 @@ async def handle_outbound_message(
             try:
                 await smtp_service.send_email(
                     to=prospect_email,
-                    subject=subject,
+                    subject = "Re: Your inquiry" if not subject or subject.strip().lower() == "not provided" else f"Re: {subject}",
                     body=public_message,
                 )
                 logger.info("✅ Message successfully sent to prospect.")

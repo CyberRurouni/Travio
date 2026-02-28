@@ -188,6 +188,14 @@ class Session:
             msg_data,
         )
 
+        logger.info(
+            "💬 Message added to buffer | Session=%s | Sender=%s | Words=%d | TotalWords=%d",
+            self.session_id,
+            sender,
+            words,
+            total_words,
+        )
+
         await SessionHelper.persist_message(
             self.session_id,
             text,

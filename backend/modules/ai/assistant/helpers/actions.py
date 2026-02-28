@@ -8,6 +8,7 @@ logging.basicConfig(level=logging.INFO)
 
 async def handle_action(
     assistant,
+    subject,
     action_type,
     action_details,
     ai_result,
@@ -23,6 +24,7 @@ async def handle_action(
 
     public_message = ai_result.get("public_message", "")
     internal_note = ai_result.get("internal_note", "")
+    consent_requested = ai_result.get("consent_requested", "none")
 
     try:
         match action_type:
@@ -32,7 +34,7 @@ async def handle_action(
                 try:
                     logger.info(
                         "💬 Processing general response | Prospect=%s",
-                        prospect_email
+                        prospect_email,
                     )
 
                     await handle_outbound_message(
@@ -42,9 +44,52 @@ async def handle_action(
                         prospect_email=prospect_email,
                         public_message=public_message,
                         internal_note=internal_note,
-                        sender = sender,
+                        sender=sender,
+                        subject=subject,
                         log_prefix="💬 General response |",
                     )
+
+                    # ── The AI explicitly declared it asked for consent.
+                    #    Write the appropriate state so the AI reads a clean
+                    #    named status on the next turn — no inference needed. ──
+
+                    if consent_requested == "agent_handoff":
+                        try:
+                            await assistant.session.chat_container(
+                                text="""[STATE_UPDATE]
+action_type: connect_human_agent
+status: consent_requested
+reason: Travio asked prospect for consent to connect a human agent.
+context: Awaiting explicit prospect affirmative before executing handoff.""",
+                                sender="system",
+                            )
+                            logger.info(
+                                "📋 Agent handoff consent state written | Prospect=%s",
+                                prospect_email,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "⚠️ Failed writing agent handoff consent state: %s", e
+                            )
+
+                    elif consent_requested == "booking":
+                        try:
+                            await assistant.session.chat_container(
+                                text="""[STATE_UPDATE]
+action_type: seek_booking_consent
+status: consent_requested
+reason: Travio asked prospect to confirm their booking request.
+context: Awaiting explicit prospect affirmative before forwarding booking to agent.""",
+                                sender="system",
+                            )
+                            logger.info(
+                                "📋 Booking consent state written | Prospect=%s",
+                                prospect_email,
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                "⚠️ Failed writing booking consent state: %s", e
+                            )
 
                 except Exception as e:
                     logger.error("❌ Error in general_response action: %s", e)
@@ -147,30 +192,30 @@ results: {json.dumps(scanning, indent=2)}""",
                     try:
                         await assistant.session.chat_container(
                             text=f"""[STATE_UPDATE]
-            action_type: connect_human_agent
-            status: pending
-            reason: {reason}
-            context: {note}
-            results: null""",
+action_type: connect_human_agent
+status: pending
+reason: {reason}
+context: {note}
+results: null""",
                             sender="system",
                         )
                         logger.info("⏳ Human agent handoff pending...")
                     except Exception as e:
                         logger.warning("⚠️ Failed logging pending handoff: %s", e)
 
-                    # 2️⃣ Send email to agent (fire-and-forget)
+                    # 2️⃣ Send email to agent
                     try:
                         agent_email_body = f"""
-            Dear Agent,
+Dear Agent,
 
-            A prospect requires direct assistance.
+A prospect requires direct assistance.
 
-            Prospect: {prospect_email}
-            Reason: {reason}
-            Context: {note}
+Prospect: {prospect_email}
+Reason: {reason}
+Context: {note}
 
-            Please reach out to the prospect directly.
-            """
+Please reach out to the prospect directly.
+"""
                         await smtp_service.send_email(
                             to=agent_email,
                             subject=f"Human Assistance Required: {prospect_email}",
@@ -180,22 +225,21 @@ results: {json.dumps(scanning, indent=2)}""",
                     except Exception as e:
                         logger.warning("⚠️ Failed sending handoff email: %s", e)
 
-                    # 3️⃣ Log success state
+                    # 3️⃣ Log email_sent state
                     try:
                         await assistant.session.chat_container(
                             text=f"""[STATE_UPDATE]
-            action_type: connect_human_agent
-            status: email_sent
-            context: {note}
-            reason: {reason}
-            results: Handoff email sent to agent
-            """,
+action_type: connect_human_agent
+status: email_sent
+context: {note}
+reason: {reason}
+results: Handoff email sent to agent""",
                             sender="system",
                         )
                     except Exception as e:
                         logger.warning("⚠️ Failed logging handoff completion: %s", e)
 
-                    # 4️⃣ Regenerate immediately (close loop deterministically)
+                    # 4️⃣ Regenerate (close loop)
                     await regenerate_and_send(
                         assistant,
                         smtp_service,
@@ -245,7 +289,6 @@ results: null""",
                             "⚠️ Failed logging pending reference retrieval: %s", e
                         )
 
-                    # Embedding + retrieval
                     try:
                         embedding = await generate_embeddings(note)
                         reference_packages, reference_msg = (
@@ -308,6 +351,7 @@ results: {{
                     )
                     logger.info("📝 Booking context:\n%s", note)
 
+                    # 1️⃣ Log pending state
                     try:
                         await assistant.session.chat_container(
                             text=f"""[STATE_UPDATE]
@@ -322,6 +366,7 @@ results: null""",
                     except Exception as e:
                         logger.warning("⚠️ Failed logging pending booking: %s", e)
 
+                    # 2️⃣ Send booking email to agent
                     try:
                         booking_email_body = f"""
 Dear Agent,
@@ -345,6 +390,7 @@ Please proceed with booking process.
                     except Exception as e:
                         logger.warning("⚠️ Failed sending booking email: %s", e)
 
+                    # 3️⃣ Log success state
                     try:
                         await assistant.session.chat_container(
                             text=f"""[STATE_UPDATE]
@@ -371,7 +417,7 @@ results: null""",
                 except Exception as e:
                     logger.error("❌ Error in seek_booking action: %s", e)
 
-            # -------------------- Final Message --------------------
+            # -------------------- FINAL MESSAGE --------------------
             case "final_message":
                 from core import SessionHelper
                 try:
@@ -380,21 +426,20 @@ results: null""",
                         prospect_email,
                     )
 
-                    # Use shared handler for public message
                     await handle_outbound_message(
                         assistant=assistant,
                         smtp_service=smtp_service,
                         logger=logger,
                         prospect_email=prospect_email,
                         public_message=public_message,
-                        sender = sender,
+                        sender=sender,
+                        subject=subject,
                         log_prefix="🎯 Final message |",
                     )
 
-                    # End Session
                     await SessionHelper.end_session(
                         prospect_id=prospect_id,
-                        session_id=session_id
+                        session_id=session_id,
                     )
 
                 except Exception as e:

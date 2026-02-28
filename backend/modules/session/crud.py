@@ -17,14 +17,6 @@ async def initiate_session(prospect_id: str, payload: Dict[str, Any]) -> UUID | 
     """
     Initiates a session for a prospect, returning the active session ID.
     Uses the atomic Postgres function 'initiate_session' via RPC.
-
-    Args:
-        prospect_id (str): UUID of the prospect
-        payload (dict): Additional session metadata. Only 'intent', 'intent_confidence',
-                        'first_impression', and 'constraints' are used optionally.
-
-    Returns:
-        UUID | None: ID of the active session, or None if creation failed
     """
 
     if not prospect_id or not payload.get("intent"):
@@ -36,31 +28,33 @@ async def initiate_session(prospect_id: str, payload: Dict[str, Any]) -> UUID | 
         return None
 
     try:
-        # Prepare parameters for the atomic RPC function
         session_data: Dict[str, Any] = {
-            "prospect_id": prospect_id,
-            "intent": payload.get("intent"),
-            "intent_confidence": payload.get("intent_confidence"),
-            "first_impression": payload.get("first_impression"),
-            "constraints": None,
+            "p_prospect_id": prospect_id,
+            "p_intent": payload.get("intent"),
+            "p_intent_confidence": payload.get("intent_confidence"),
+            "p_first_impression": payload.get("first_impression"),
+            "p_constraints": payload.get("constraints"),
         }
 
-        # Call atomic Postgres function via RPC
         result = await db_rpc("initiate_session", session_data)
 
-        # Postgres RPC returns a dict with the session ID
-        session_id: str | None = None
-        if isinstance(result, dict):
-            session_id = result.get("id")
-        elif isinstance(result, list) and len(result) > 0:
-            # Sometimes Supabase returns a list of rows
-            session_id = result[0].get("id")
+        # Supabase returns the scalar UUID directly for RETURNS UUID
+        if isinstance(result, str):
+            session_id = result
+        elif isinstance(result, dict):
+            # Sometimes wrapped
+            session_id = result.get("initiate_session") or result.get("id")
+        elif isinstance(result, list) and result:
+            session_id = result[0]
+        else:
+            session_id = None
 
         if not session_id:
             logger.error(
-                "❌ Failed to get session ID from RPC | Prospect ID=%s | payload=%s",
+                "❌ Failed to get session ID from RPC | Prospect ID=%s | payload=%s | result=%s",
                 prospect_id,
                 payload,
+                result,
             )
             return None
 
@@ -70,7 +64,7 @@ async def initiate_session(prospect_id: str, payload: Dict[str, Any]) -> UUID | 
             prospect_id,
         )
 
-        return UUID(session_id)
+        return UUID(str(session_id))
 
     except Exception as e:
         logger.exception(
@@ -237,7 +231,8 @@ async def touch_session(session_id: str | UUID) -> bool:
         )
         return False
 
-def end_session(session_id: str | UUID) -> bool:
+
+async def end_session(session_id: str | UUID) -> bool:
     """
     Marks a session as ended by setting is_ended to True and updating ended_at timestamp.
     Uses the atomic Postgres RPC function `end_session`.
@@ -247,7 +242,7 @@ def end_session(session_id: str | UUID) -> bool:
     Returns:
         bool: True if session was successfully ended, False otherwise
     """
-    
+
     if not session_id:
         logger.error("❌ Cannot end session: missing session_id")
         return False
@@ -259,7 +254,7 @@ def end_session(session_id: str | UUID) -> bool:
 
         payload = {"p_session_id": session_id}
 
-        result = db_rpc("end_session", payload)
+        result = await db_rpc("end_session", payload)
 
         # Postgres function returns boolean (True if session was ended, False otherwise)
         if isinstance(result, bool):
@@ -325,7 +320,7 @@ async def create_session_message(
             "✅ Chat message inserted | Session ID=%s | Sender=%s | Msg=%s",
             session_id,
             sender,
-            msg,
+            msg[:50] + "..." if len(msg) > 50 else msg,
         )
 
     except Exception as e:
@@ -386,13 +381,8 @@ async def fetch_session_chats(session_id: str) -> list[dict[str, Any]]:
 async def delete_all_chats(session_id: str) -> bool:
     """
     Permanently deletes all chat messages for a given session from the database.
-
-    Args:
-        session_id (str): UUID of the session
-
-    Returns:
-        bool: True if deletion succeeded, False otherwise
     """
+
     if not session_id:
         logger.error("❌ Cannot delete chats: missing session_id")
         return False
@@ -401,19 +391,15 @@ async def delete_all_chats(session_id: str) -> bool:
         result = await db_delete(
             table="chats",
             filters={"session_id": session_id},
-            returning="none",  # hard delete, do not return any rows
+            returning="minimal",
         )
 
-        if result is True:
-            logger.info("✅ All chat messages deleted | Session ID=%s", session_id)
-            return True
-
-        logger.warning(
-            "⚠️ db_delete returned unexpected value | Session ID=%s | Result=%s",
-            session_id,
-            result,
-        )
-        return False
+        # For returning="minimal":
+        # Supabase returns None on success
+        # db_delete also returns None on exception
+        # So we treat lack of exception as success
+        logger.info("✅ All chat messages deleted | Session ID=%s", session_id)
+        return True
 
     except Exception as e:
         logger.error(

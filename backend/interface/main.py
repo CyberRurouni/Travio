@@ -6,16 +6,22 @@ logger = logging.getLogger("AI_EMAIL_ASSISTANT")
 
 
 async def main():
-    from core import realtime_followup_handler, EmailService
+    from core import EmailService
 
     logger.info("🔧 Starting AI Email Assistant")
 
     email_service = EmailService()
 
-    # Start IMAP worker once (thread)
     await email_service.start_imap_worker()
 
-    await email_service.perpetual_email_processor(),  # async redis consumer
+    # run redis consumer as background task
+    asyncio.create_task(
+        email_service.perpetual_email_processor(),
+        name="redis-consumer"
+    )
+
+    # keep app alive forever
+    await asyncio.Event().wait()
 
 
 if __name__ == "__main__":

@@ -3,7 +3,6 @@
 # ---------
 
 # Config
-from Python.SaaS.Travio.backend.modules.session.helpers import session_helper
 from genesis.config import client, supabase, async_supabase, get_async_supabase
 from genesis.config import fetch_unread_emails
 from genesis.config import AGENT_EMAIL

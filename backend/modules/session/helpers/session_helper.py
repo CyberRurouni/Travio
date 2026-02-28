@@ -284,7 +284,7 @@ class SessionHelper:
 
     # -------------------- End Session --------------------
     @staticmethod
-    def end_session(prospect_id: str, session_id: str | UUID = None):
+    async def end_session(prospect_id: str, session_id: str | UUID = None):
         # Clear Redis cache
         cache_key = SessionHelper._session_cache_key(prospect_id)
         first_impression_key = SessionHelper._first_impression_cache_key(prospect_id)
@@ -297,7 +297,7 @@ class SessionHelper:
         )
 
         # Call DB to mark session as ended
-        success = crud_end_session(session_id=session_id)
+        success = await crud_end_session(session_id=session_id)
         if not success:
             logger.warning("⚠️ Failed to end session in DB | Session ID=%s", session_id)
         else:
@@ -337,7 +337,7 @@ class SessionHelper:
             "💬 Message added | Session=%s | Sender=%s | Words=%d | TotalWords=%d",
             session_id,
             msg_data.get("sender"),
-            msg_data.get("words", "text"),
+            msg_data.get("words", 0),
             total_words,
         )
         return total_words

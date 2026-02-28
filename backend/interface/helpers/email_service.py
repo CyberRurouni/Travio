@@ -123,7 +123,7 @@ class EmailService:
             Assistant,
             CaseAgent,
         )
-        from ..helpers.utils import strip_email_reply_tail
+        from ..helpers.utils import extract_clean_email_body
 
         email_id, content = email
         logger.info(f"📩 Processing email | ID={email_id}")
@@ -154,21 +154,17 @@ class EmailService:
             body = content.get("body") or ""
 
             # ─── Strip email reply tail ──────────────────────────
-            body = strip_email_reply_tail(body=body)
+            message = extract_clean_email_body(body=body)
 
             # ─── Guard: internal agent email ───────────────────────
             if is_internal_agent_email(sender_email):
                 logger.info(f"👤 Email from internal agent | Email={sender_email}")
 
                 # ─── Agent lifecycle ──────────────────────────────
-                case_agent_registry = InstanceRegistry(ttl=timedelta(hours=1))
-                case_agent = await case_agent_registry.get_or_create(
-                    key=sender_email,
-                    factory=CaseAgent,
+                case_agent = CaseAgent(
                     agent_email=sender_email,
-                    message=body,
+                    msg=message,
                     subject=subject,
-                    factory_type="async",
                 )
 
                 # ─── Execute agent final message flow ─────────────────
@@ -181,7 +177,7 @@ class EmailService:
             classification = classify_sender(
                 sender_id=sender_email,
                 subject=subject,
-                message=body,
+                message=message,
             )
 
             logger.info(f"🧪 Classification result | {classification}")
@@ -228,15 +224,19 @@ class EmailService:
                 factory=Session.initiate_session,
                 agency_id=str(agency_id),
                 prospect_id=str(prospect_id),
-                msg=body,
+                msg=message,
                 subject=subject,
                 factory_type="async",
             )
 
+            if session is None:
+                logger.error(f"❌ Session creation failed | Prospect ID={prospect_id}")
+                return  # safely exit without calling chat_container
+
             # ─── Persist inbound message ─────────────────────────
             await session.chat_container(
                 sender="prospect",
-                text=body,
+                text=message,
             )
 
             # ─── Assistant lifecycle ─────────────────────────────
@@ -254,7 +254,8 @@ class EmailService:
             # ─── Assistant response generation ───────────────────
             await assistant.response(
                 prospect_email=sender_email,
-                msg=body,
+                msg=message,
+                subject = subject,
                 first_impression=session._cached_first_impression,
                 agent_email=AGENT_EMAIL,
             )

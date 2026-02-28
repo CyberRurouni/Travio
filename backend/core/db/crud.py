@@ -366,11 +366,11 @@ async def db_delete(
     exclude_filters: dict | None = None,
     or_excluded_filters: list[tuple[str, str, Any]] | None = None,
     limit: int | None = None,
-    returning: Literal["none", "minimal", "representation"] = "none",
+    returning: Literal["minimal", "representation"] = "minimal",
 ) -> list | bool | None:
     """
     Flexible DELETE helper similar to db_select, supporting AND, OR, and NOT filters.
-    `returning` can be: "none", "minimal", "representation"
+    `returning` can be: "minimal", "representation"
     """
     try:
         return_method = ReturnMethod(returning)

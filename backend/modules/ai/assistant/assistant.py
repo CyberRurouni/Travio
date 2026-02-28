@@ -5,7 +5,7 @@ from datetime import timedelta
 from core import Session, InstanceRegistry, TravelIntentGuard
 from .helpers.response import generate_ai_response
 from .helpers.actions import handle_action
-from .helpers.utils import get_smtp_service
+from .helpers.utils import get_smtp_service, log_chat_history_readable
 
 logger = logging.getLogger("ASSISTANT")
 
@@ -23,6 +23,7 @@ class Assistant:
         agent_email: str,
         msg: str,
         first_impression: dict,
+        subject: str = "Not Provided",
         sender: str = "Travio",
         agent_message: bool = False,
         final_message: bool = False,
@@ -34,12 +35,7 @@ class Assistant:
         )
         chat_history, is_prospect_first_msg = result or ([], True)
 
-        logger.info(
-            "📜 Chat History | 👤 Prospect=%s | 🧩 Session=%s | Messages=%s",
-            self.prospect_id,
-            self.session.session_id,
-            chat_history,
-        )
+        log_chat_history_readable(chat_history, prospect_id=self.prospect_id, session_id=self.session.session_id)
 
         # -------------------- Intent analysis --------------------
         intent_guard_data = {}
@@ -59,7 +55,6 @@ class Assistant:
         ai_result = generate_ai_response(
             chat_container=chat_history,
             intent_guard_data=intent_guard_data if intent_guard_data else None,
-            final_message=final_message,
         )
 
         action_type = ai_result.get("actions", {}).get("type")
@@ -74,6 +69,7 @@ class Assistant:
         # -------------------- Delegate to Action Layer --------------------
         await handle_action(
             assistant=self,
+            subject = subject,
             action_type=action_type,
             action_details=action_details,
             ai_result=ai_result,

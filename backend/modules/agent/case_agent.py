@@ -213,6 +213,7 @@ class CaseAgent:
 
         await assistant.response(
             prospect_email=self.prospect_email,
+            first_impression=session._cached_first_impression or {},
             msg=self.message,
             agent_email=self.agent_email,
             agent_message=True,

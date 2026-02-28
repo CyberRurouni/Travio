@@ -150,7 +150,7 @@ def compact_dialogue_state(chat_history: list[dict]) -> tuple[list[dict], bool]:
                 ],
                 temperature=0,
                 max_tokens=max_tokens,
-                model="openai/gbt-40-mini",
+                model="openai/gpt-4o-mini",
                 response_format="json",
                 fallback_response=chat_history,
             )
