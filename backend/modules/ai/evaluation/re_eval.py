@@ -1,6 +1,5 @@
 import json
 import logging
-
 from .prompts import REEVALUATION_SYSTEM_PROMPT
 
 logger = logging.getLogger("Email_Evaluator")
@@ -9,102 +8,90 @@ logger = logging.getLogger("Email_Evaluator")
 # ────────────────────────────────────────────────────────────────
 # RE-EVALUATION FUNCTION
 # ────────────────────────────────────────────────────────────────
-def reevaluate_email(
+async def reevaluate_email(
     sender_id: str,
-    message: str,
-    previous_questions: list[str],
+    conversation_context: list[dict],  # Full history: [{role, content}, ...]
+    attempt: int,
 ) -> dict:
     """
-    Verifies whether a follow-up message answers prior clarifying questions.
-    Always returns safe JSON with guaranteed structure.
+    Stateful re-evaluator.
+    - Stores the prospect's message into context.
+    - Asks friendly clarifying questions via email.
+    - Stores its own response into context for next round.
+    - Returns resolution verdict + updated context.
     """
-    from core import call_openai_safe
+    from core import call_openai_safe, get_smtp_service
 
     messages = [
         {"role": "system", "content": REEVALUATION_SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": f"""
-Sender ID:
-{sender_id}
-
-Clarifying questions previously asked:
-{json.dumps(previous_questions, indent=2)}
-
-New message:
-{message}
-""",
-        },
+        *conversation_context,
     ]
 
-    # Define safe fallback
+    logger.info(f"🔁 Starting re-evaluation | attempt={attempt} | {sender_id}")
+    logger.info(
+        f"📜 Conversation context for re-evaluation | {json.dumps(conversation_context, indent=2)}"
+    )
+
     fallback = {
         "resolution": "unresolved",
         "category": "unknown",
         "confidence": 0.0,
         "reason": "LLM re-evaluation failed",
-        "answered_questions": [],
-        "missing_questions": previous_questions,
+        "friendly_reply": None,
+        "updated_context": conversation_context,
     }
 
     try:
-        logger.debug("🔁 Running RE-EVALUATION")
+        logger.debug(f"🔁 Running RE-EVALUATION | attempt={attempt} | {sender_id}")
 
         reevaluation = call_openai_safe(
             messages=messages,
-            temperature=0.0,
-            max_tokens=500, 
+            temperature=0.2,
+            max_tokens=600,
             response_format="json",
             fallback_response=fallback,
         )
 
-        # Validate structure
         if not isinstance(reevaluation, dict):
             logger.error(f"❌ Invalid reevaluation type: {type(reevaluation)}")
             return fallback
 
-        # Ensure required fields
+        resolution = reevaluation.get("resolution", "unresolved")
+        category = reevaluation.get("category", "unknown")
+        friendly_reply = reevaluation.get(
+            "friendly_reply"
+        )  # The email body to send back
+
+        # Append assistant's reply to context for next round
+        if friendly_reply:
+            conversation_context = conversation_context + [
+                {"role": "assistant", "content": friendly_reply}
+            ]
+
+        # Send clarification email if not resolved
+        if resolution != "resolved" and friendly_reply:
+            try:
+                smtp = await get_smtp_service()
+                await smtp.send_email(
+                    to=sender_id,
+                    subject="Re: Your message",
+                    body=friendly_reply,
+                )
+                logger.info(
+                    f"📨 Clarification email sent | {sender_id} | attempt={attempt}"
+                )
+            except Exception:
+                logger.exception(f"⚠️ Failed to send clarification email | {sender_id}")
+
         return {
-            "resolution": reevaluation.get("resolution", "unresolved"),
-            "category": reevaluation.get("category", "unknown"),
+            "resolution": resolution,
+            "category": category,
             "confidence": float(reevaluation.get("confidence", 0.0)),
             "reason": reevaluation.get("reason", "No reason provided"),
-            "answered_questions": reevaluation.get("answered_questions", []),
-            "missing_questions": reevaluation.get(
-                "missing_questions", previous_questions
-            ),
+            "friendly_reply": friendly_reply,
+            "updated_context": conversation_context,
         }
 
-    except Exception as exc:
+    except Exception:
         logger.exception("💥 Re-evaluation crashed")
         return fallback
-
-
-# ────────────────────────────────────────────────────────────────
-# Clarification Email Sender
-# ────────────────────────────────────────────────────────────────
-def send_clarification_email(classification, sender_email):
-    from core import SMTPService # Imported here to avoid circular imports
-    logger.warning(f"🔁 Re-evaluation required | Sender={sender_email}")
-
-
-
-#     if sender_email == "ahk3155262@gmail.com":
-#         questions = classification.get("evaluation", {}).get("clarifying_questions", [])
-
-#         if questions:
-#             body_text = "\n".join(f"- {q}" for q in questions)
-#             send_email(
-#                 to=sender_email,
-#                 subject="Quick clarification needed",
-#                 body=body_text,
-#             )
-#             logger.info(f"📤 Clarifying email sent | Sender={sender_email}")
-#         else:
-#             logger.warning(
-#                 f"⚠️ Re-eval needed but no questions available | Sender={sender_email}"
-#             )
-#     else:
-#         logger.warning(
-#             f"🚫 Clarification email blocked (unauthorized) | Sender={sender_email}"
-#         )

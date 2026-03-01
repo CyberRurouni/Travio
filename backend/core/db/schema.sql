@@ -18,6 +18,7 @@ CREATE TABLE agencies (
     name TEXT NOT NULL,
     issued_email TEXT,         -- email used for identification
     agent_email TEXT,         -- email used by agent to send emails
+    vault_secret_id UUID,      -- reference to Vault secret (if any)
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -57,7 +58,7 @@ CREATE TABLE active_packages (
 CREATE TABLE agency_packages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
-    agency_id UUID NOT NULL REFERENCES agencies(id),
+    agency_id UUID NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
 
     -- public-facing info
     name TEXT NOT NULL,               -- "Basic", "Pro", "Custom Miami Tour"

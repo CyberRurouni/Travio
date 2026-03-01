@@ -1,68 +1,99 @@
 import logging
 import asyncio
+import hashlib
+from datetime import timedelta
+from typing import List
+
+from realtime import Optional
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("GENERAL_UTILS")
 
 
 # =========================================
-# 1️⃣ Generate embeddings
+# Generate embeddings (async-safe)
 # =========================================
-async def generate_embeddings(text: str) -> list[float]:
-    """Get embedding vector for given text using OpenAI embeddings"""
-    from core import client
-
-    resp = client.embeddings.create(model="openai/text-embedding-3-small", input=text)
-    return resp.data[0].embedding
+async def generate_embeddings(text: str) -> List[float]:
+    """
+    Get embedding vector for given text using OpenAI embeddings asynchronously.
+    """
+    try:
+        from core import client
+        # Use asyncio.to_thread in case client is sync
+        resp = await asyncio.to_thread(
+            client.embeddings.create,
+            model="openai/text-embedding-3-small",
+            input=text,
+        )
+        return resp.data[0].embedding
+    except Exception as e:
+        logger.exception(f"💥 generate_embeddings failed: {e}")
+        return []
 
 
 # =========================================
-# 2️⃣ Populate embeddings for all packages
+# Generate and store embedding for a single package
 # =========================================
-async def populate_embeddings(BATCH_SIZE: int = 20):
-    """Populate missing embeddings for agency_packages table"""
-    from core import db_select, db_update
+async def generate_package_embedding(package: dict) -> Optional[List[float]]:
+    """
+    Generate embedding for a single agency package and store in DB.
+    Accepts the full package dict to avoid extra DB read.
+    """
+    try:
+        from core import db_update, format_packages
+        package_id = package.get("id")
+        if not package_id:
+            logger.error("❌ Package dict missing 'id'")
+            return None
 
-    # Fetch rows that don't have embeddings yet
-    rows = await db_select(
-        "agency_packages",
-        fields="id, name, description, destination",
-        filters={"embedding": None},
+        logger.info(f"🧠 Generating semantic embedding for package={package_id}")
+
+        # Format the package for better semantic context
+        formatted = format_packages([package])
+        if not formatted:
+            logger.error("❌ Formatting failed")
+            return None
+
+        embedding_text = formatted[0]["details"]
+
+        # Generate embedding
+        embedding = await generate_embeddings(embedding_text)
+        if not embedding:
+            logger.error("❌ Embedding generation failed")
+            return None
+
+        # Store in DB
+        await db_update(
+            table="agency_packages",
+            updates={"embedding": embedding},
+            filters={"id": package_id},
+        )
+
+        logger.info(f"✅ Embedding stored for package={package_id}")
+        return embedding
+
+    except Exception as e:
+        logger.exception(f"💥 generate_package_embedding failed: {e}")
+        return None
+
+
+# =========================================
+# Hashing utility for contact identifiers
+# =========================================
+def hash_identifier(raw_identifier: str) -> str:
+    """Deterministic SHA256 hash for contact identifier."""
+    return hashlib.sha256(raw_identifier.strip().lower().encode()).hexdigest()
+
+
+# =========================================
+# SMTP Service Instance Getter
+# =========================================
+async def get_smtp_service():
+    from core import InstanceRegistry, SMTPService
+
+    smtp_registry = InstanceRegistry(ttl=timedelta(hours=6))
+    return await smtp_registry.get_or_create(
+        key="smtp_service",
+        factory=SMTPService,
+        factory_type="sync",
     )
-
-    if not rows:
-        logger.info("✅ No rows need embeddings.")
-        return
-
-    logger.info(f"🧠 Generating embeddings for {len(rows)} rows...")
-
-    # Process in batches to limit API + DB concurrency
-    for i in range(0, len(rows), BATCH_SIZE):
-        batch_rows = rows[i : i + BATCH_SIZE]
-
-        # Build embedding text for this batch
-        batch_texts = [
-            f"{r['name']} {r['description'] or ''} {r['destination'] or ''}"
-            for r in batch_rows
-        ]
-
-        # Generate embeddings concurrently
-        embeddings = await asyncio.gather(
-            *(generate_embeddings(t) for t in batch_texts)
-        )
-
-        # Update rows concurrently
-        await asyncio.gather(
-            *[
-                db_update(
-                    "agency_packages",
-                    updates={"embedding": embedding},
-                    filters={"id": row["id"]},
-                )
-                for row, embedding in zip(batch_rows, embeddings)
-            ]
-        )
-
-        logger.info(f"⚡ Updated {min(i + BATCH_SIZE, len(rows))}/{len(rows)}")
-
-    logger.info("🎉 Embedding population complete.")

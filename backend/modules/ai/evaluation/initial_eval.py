@@ -35,10 +35,6 @@ Message:
         "category": "unknown",
         "confidence": 0.0,
         "reason": "LLM evaluation failed - defaulting to unknown",
-        "clarifying_questions": [
-            "What is the purpose of your message?",
-            "Are you interested in our services?",
-        ],
     }
 
     try:
@@ -54,7 +50,7 @@ Message:
 
         # Validate structure
         if not isinstance(evaluation, dict):
-            logger.error(f"❌ Invalid evaluation type: {type(evaluation)}")
+            logger.error(f"❌ Invalid evaluation type: {type(evaluation)}") 
             return fallback
 
         # Ensure required fields with safe defaults
@@ -62,7 +58,6 @@ Message:
             "category": evaluation.get("category", "unknown"),
             "confidence": float(evaluation.get("confidence", 0.0)),
             "reason": evaluation.get("reason", "No reason provided"),
-            "clarifying_questions": evaluation.get("clarifying_questions", []),
         }
 
     except Exception as exc:

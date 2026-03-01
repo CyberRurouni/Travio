@@ -1,20 +1,10 @@
 import logging
 from typing import List, Dict
 from datetime import timedelta
+
 from .response import generate_ai_response
 
 logger = logging.getLogger("ASSISTANT")
-
-
-async def get_smtp_service():
-    from core import InstanceRegistry, SMTPService
-
-    smtp_registry = InstanceRegistry(ttl=timedelta(hours=6))
-    return await smtp_registry.get_or_create(
-        key="smtp_service",
-        factory=SMTPService,
-        factory_type="sync",
-    )
 
 
 def log_chat_history_readable(
@@ -94,9 +84,17 @@ async def handle_outbound_message(
 
             # Send email
             try:
+                DEFAULT_SUBJECTS = {"not provided", "no subject", ""}
+                email_subject = subject.strip().lower() if subject else ""
+                final_subject = (
+                    "Re: Your Inquiry"
+                    if email_subject in DEFAULT_SUBJECTS
+                    else f"Re: {subject}"
+                )
+
                 await smtp_service.send_email(
                     to=prospect_email,
-                    subject = "Re: Your inquiry" if not subject or subject.strip().lower() == "not provided" else f"Re: {subject}",
+                    subject=final_subject,
                     body=public_message,
                 )
                 logger.info("✅ Message successfully sent to prospect.")

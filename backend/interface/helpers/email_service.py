@@ -115,7 +115,6 @@ class EmailService:
             emails_stream,
             AGENT_EMAIL,
             classify_sender,
-            send_clarification_email,
             is_internal_agent_email,
             HandleProspect,
             InstanceRegistry,
@@ -174,20 +173,13 @@ class EmailService:
                 return
 
             # ─── Classify sender intent ───────────────────────────
-            classification = classify_sender(
+            classification = await classify_sender(
                 sender_id=sender_email,
                 subject=subject,
                 message=message,
             )
 
             logger.info(f"🧪 Classification result | {classification}")
-
-            # ─── Action: clarification required ──────────────────
-            if classification.get("re_evaluation_needed"):
-                send_clarification_email(
-                    classification=classification,
-                    sender_email=sender_email,
-                )
 
             # ─── Guard: not a prospect ────────────────────────────
             if classification.get("is_prospect") is False:

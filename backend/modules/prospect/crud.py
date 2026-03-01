@@ -92,3 +92,45 @@ async def touch_prospect_presence(
             e,
         )
         return None
+
+
+async def is_registered_prospect_by_email(email: str) -> Optional[UUID]:
+    """
+    Checks whether the given email already belongs to a registered prospect.
+
+    Returns:
+        prospect_id (UUID) if exists
+        None if not registered
+    """
+    from core import hash_identifier
+
+    if not email:
+        return None
+
+    identifier_hash = hash_identifier(email)
+
+    result = await db_select(
+        table="contact_methods",
+        filters={
+            "channel_type": "email",
+            "identifier_hash": identifier_hash,
+        },
+        fields="prospect_id",
+        limit=1,
+    )
+
+    if not isinstance(result, list) or not result:
+        return None
+
+    row = result[0]
+    if not isinstance(row, dict):
+        return None
+
+    raw_id = row.get("prospect_id")
+    if not raw_id:
+        return None
+
+    try:
+        return UUID(str(raw_id))
+    except Exception:
+        return None

@@ -2,10 +2,10 @@ import logging
 from typing import Optional
 from datetime import timedelta
 
-from core import Session, InstanceRegistry, TravelIntentGuard
+from core import Session, get_smtp_service, TravelIntentGuard
 from .helpers.response import generate_ai_response
 from .helpers.actions import handle_action
-from .helpers.utils import get_smtp_service, log_chat_history_readable
+from .helpers.utils import log_chat_history_readable
 
 logger = logging.getLogger("ASSISTANT")
 

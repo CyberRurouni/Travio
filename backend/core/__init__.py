@@ -17,7 +17,7 @@ from .utils.redis_utils import emails_stream
 from .utils.redis_utils import safe_redis_operation
 from .utils.ai_utils import call_openai_safe
 from .utils.instance_registry import InstanceRegistry
-from .utils.general import generate_embeddings, populate_embeddings
+from .utils.general import generate_embeddings, generate_package_embedding, hash_identifier, get_smtp_service
 
 # ---------- Services ----------
 from .services.crud import fetch_table_schema, run_sql_query
@@ -42,13 +42,13 @@ from modules.agent.case_agent import CaseAgent, is_internal_agent_email
 
 # Evaluation
 from modules.ai.evaluation.eval import classify_sender
-from modules.ai.evaluation.re_eval import send_clarification_email
 
 # Intent Guard/Analyzer
 from modules.ai.intent_guard.engine import TravelIntentGuard
 
 # Prospect
 from modules.prospect.prospect import HandleProspect
+from modules.prospect.crud import is_registered_prospect_by_email
 
 # Session
 from modules.session.session import Session
@@ -63,6 +63,7 @@ from modules.ai.assistant.assistant import Assistant
 # Recommendation
 from modules.ai.recommendation.recommend import db_scanning, get_packages_schema
 from modules.ai.recommendation.components.reference import ReferenceMemory
+from modules.ai.recommendation.utils import format_packages
 
 # Essence
 from modules.ai.essence.compaction import compact_dialogue_state
