@@ -15,9 +15,10 @@ async def handle_action(
     smtp_service,
     prospect_email,
     agent_email,
+    agency_name,
     sender,
     intent_guard_data,
-    prospect_id,
+    agency_prospect_id,
     session_id,
 ):
     from core import db_scanning
@@ -129,7 +130,7 @@ results: null""",
                         scanning = await db_scanning(
                             note,
                             session_id=assistant.session.session_id,
-                            prospect_id=assistant.prospect_id,
+                            agency_prospect_id=assistant.agency_prospect_id,
                             exclude_previous_ids=extra.get(
                                 "exclude_previous_ids", False
                             ),
@@ -160,11 +161,12 @@ results: {json.dumps(scanning, indent=2)}""",
                     # 4️⃣ Regenerate deterministically
                     try:
                         await regenerate_and_send(
-                            assistant,
-                            smtp_service,
-                            prospect_email,
-                            sender,
-                            intent_guard_data,
+                            assistant=assistant,
+                            smtp_service=smtp_service,
+                            prospect_email=prospect_email,
+                            sender=sender,
+                            intent_guard_data=intent_guard_data,
+                            agency_name=agency_name,
                         )
                         logger.info("🔄 Regeneration after scan triggered.")
                     except Exception as e:
@@ -241,11 +243,12 @@ results: Handoff email sent to agent""",
 
                     # 4️⃣ Regenerate (close loop)
                     await regenerate_and_send(
-                        assistant,
-                        smtp_service,
-                        prospect_email,
-                        sender,
-                        intent_guard_data,
+                        assistant=assistant,
+                        smtp_service=smtp_service,
+                        prospect_email=prospect_email,
+                        sender=sender,
+                        intent_guard_data=intent_guard_data,
+                        agency_name=agency_name,
                     )
 
                     logger.info(
@@ -320,11 +323,12 @@ results: {{
 
                     try:
                         await regenerate_and_send(
-                            assistant,
-                            smtp_service,
-                            prospect_email,
-                            sender,
-                            intent_guard_data,
+                            assistant=assistant,
+                            smtp_service=smtp_service,
+                            prospect_email=prospect_email,
+                            sender=sender,
+                            intent_guard_data=intent_guard_data,
+                            agency_name=agency_name,
                         )
                         logger.info(
                             "🔄 Regeneration after reference recommendation triggered."
@@ -402,11 +406,12 @@ results: null""",
                             sender="system",
                         )
                         await regenerate_and_send(
-                            assistant,
-                            smtp_service,
-                            prospect_email,
-                            sender,
-                            intent_guard_data,
+                            assistant=assistant,
+                            smtp_service=smtp_service,
+                            prospect_email=prospect_email,
+                            sender=sender,
+                            intent_guard_data=intent_guard_data,
+                            agency_name=agency_name,
                         )
                         logger.info("🔄 Regeneration after booking triggered.")
                     except Exception as e:
@@ -420,6 +425,7 @@ results: null""",
             # -------------------- FINAL MESSAGE --------------------
             case "final_message":
                 from core import SessionHelper
+
                 try:
                     logger.info(
                         "🎯 Final message reached | Prospect=%s",
@@ -438,7 +444,7 @@ results: null""",
                     )
 
                     await SessionHelper.end_session(
-                        prospect_id=prospect_id,
+                        agency_prospect_id=agency_prospect_id,
                         session_id=session_id,
                     )
 

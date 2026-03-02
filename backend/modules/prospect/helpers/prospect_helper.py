@@ -1,4 +1,3 @@
-import json
 import hashlib
 import logging
 from uuid import UUID
@@ -10,47 +9,42 @@ logger = logging.getLogger("PROSPECT_HELPER")
 
 
 class ProspectHelper:
-    """Helper for prospect registration, caching, and presence tracking."""
 
     @staticmethod
     def _agency_cache_key(email: str) -> str:
         return f"agency_id_by_email:{email.lower()}"
 
     @staticmethod
-    def _prospect_cache_key(agency_id: UUID, identifier: str) -> str:
+    def _agency_prospect_cache_key(agency_id: UUID, identifier: str) -> str:
+        # Cache key now stores agency_prospect_id (not prospect_id)
         identifier_hash = hashlib.sha256(identifier.encode("utf-8")).hexdigest()
-        return f"prospect:{agency_id}:{identifier_hash}"
+        return f"agency_prospect:{agency_id}:{identifier_hash}"
 
     @staticmethod
-    def _presence_cache_key(prospect_id: UUID, channel_type: str) -> str:
-        return f"presence:{prospect_id}:{channel_type.lower()}"
+    def _presence_cache_key(agency_prospect_id: UUID, channel_type: str) -> str:
+        return f"presence:{agency_prospect_id}:{channel_type.lower()}"
 
     @staticmethod
-    async def resolve_agency_id(email: str, ttl: timedelta = timedelta(hours=24)) -> UUID | None:
-        """Fetch agency_id by email using Redis cache or DB fallback."""
+    async def resolve_agency_id(
+        email: str, ttl: timedelta = timedelta(hours=24)
+    ) -> UUID | None:
         if not email:
-            logger.error("❌ Missing email for agency lookup")
             return None
-
         cache_key = ProspectHelper._agency_cache_key(email)
         cached = safe_redis_operation(session_broker.get, cache_key)
-
         if cached:
             try:
-                agency_id = UUID(cached)
-                logger.debug("🔁 Agency ID loaded from cache | Email=%s | Agency ID=%s", email, agency_id)
-                return agency_id
+                return UUID(cached)
             except ValueError:
-                logger.warning("⚠️ Invalid agency_id in cache | Email=%s", email)
-
-        # DB fallback
+                pass
         agency_id = await fetch_agency_id_by_email(email=email)
         if agency_id:
-            safe_redis_operation(session_broker.set, cache_key, str(agency_id), ex=int(ttl.total_seconds()))
-            logger.debug("✅ Agency ID cached | Email=%s | Agency ID=%s", email, agency_id)
-        else:
-            logger.info("ℹ️ No agency found for email | Email=%s", email)
-
+            safe_redis_operation(
+                session_broker.set,
+                cache_key,
+                str(agency_id),
+                ex=int(ttl.total_seconds()),
+            )
         return agency_id
 
     @staticmethod
@@ -59,71 +53,80 @@ class ProspectHelper:
         name: str,
         identifier: str,
         channel_type: str = "email",
-        ttl_seconds: int = 7 * 24 * 60 * 60
+        ttl_seconds: int = 7 * 24 * 60 * 60,
     ) -> UUID | None:
-        """Register a prospect with caching to avoid repeated DB writes."""
+        """
+        Returns agency_prospect_id.
+        Cache key and stored value both scoped to agency + identifier.
+        """
         if not agency_id:
-            logger.error("❌ Cannot register prospect: agency_id not provided")
             return None
 
-        cache_key = ProspectHelper._prospect_cache_key(agency_id, identifier)
+        cache_key = ProspectHelper._agency_prospect_cache_key(agency_id, identifier)
         cached = safe_redis_operation(prospects_broker.get, cache_key)
         if cached:
             try:
-                prospect_id = UUID(cached.decode("utf-8") if isinstance(cached, bytes) else cached)
+                agency_prospect_id = UUID(
+                    cached.decode("utf-8") if isinstance(cached, bytes) else cached
+                )
                 safe_redis_operation(prospects_broker.expire, cache_key, ttl_seconds)
-                logger.debug("⚡ Prospect cache hit, TTL renewed | Prospect ID=%s", prospect_id)
-                return prospect_id
+                logger.debug("⚡ AgencyProspect cache hit | ID=%s", agency_prospect_id)
+                return agency_prospect_id
             except Exception as e:
-                logger.warning("⚠️ Invalid prospect cache, clearing | err=%s", e)
+                logger.warning("⚠️ Invalid agency_prospect cache, clearing | err=%s", e)
                 safe_redis_operation(prospects_broker.delete, cache_key)
 
-        # DB registration
-        try:
-            result = await register_prospect(
-                agency_id=agency_id,
-                name=name,
-                channel_type=channel_type.lower(),
-                identifier_hash=hashlib.sha256(identifier.encode("utf-8")).hexdigest(),
+        agency_prospect_id = await register_prospect(
+            agency_id=agency_id,
+            name=name,
+            channel_type=channel_type.lower(),
+            identifier_hash=hashlib.sha256(identifier.encode("utf-8")).hexdigest(),
+        )
+
+        if agency_prospect_id:
+            safe_redis_operation(
+                prospects_broker.set, cache_key, str(agency_prospect_id), ex=ttl_seconds
             )
-            prospect_id = result.get("id") if isinstance(result, dict) else result
-        except Exception as e:
-            logger.error("❌ Prospect registration failed | Agency=%s | Error=%s", agency_id, e)
-            return None
+            logger.info(
+                "✅ AgencyProspect registered and cached | ID=%s", agency_prospect_id
+            )
 
-        if prospect_id:
-            safe_redis_operation(prospects_broker.set, cache_key, str(prospect_id), ex=ttl_seconds)
-            logger.info("✅ Prospect registered and cached | Prospect ID=%s", prospect_id)
-
-        return prospect_id
+        return agency_prospect_id
 
     @staticmethod
-    async def update_presence(prospect_id: UUID, identifier: str, channel_type: str = "email"):
-        """Update prospect presence, cached to debounce frequent DB writes."""
-        if not prospect_id:
-            logger.error("❌ Cannot update presence: prospect_id not set")
+    async def update_presence(
+        agency_prospect_id: UUID,
+        identifier: str,
+        channel_type: str = "email",
+    ):
+        """Debounced presence update using agency_prospect_id."""
+        if not agency_prospect_id:
             return
 
-        cache_key = ProspectHelper._presence_cache_key(prospect_id, channel_type)
-        ttl_seconds = 60 * 60  # 1 hour
-
+        cache_key = ProspectHelper._presence_cache_key(agency_prospect_id, channel_type)
         cached = safe_redis_operation(prospects_broker.get, cache_key)
         if cached:
-            logger.debug("⚡ Presence cache hit, skipping DB | Prospect ID=%s | Channel=%s", prospect_id, channel_type)
+            logger.debug(
+                "⚡ Presence cache hit, skipping DB | AgencyProspectID=%s",
+                agency_prospect_id,
+            )
             return
 
         try:
             await touch_prospect_presence(
-                prospect_id=prospect_id,
+                agency_prospect_id=agency_prospect_id,
                 channel_type=channel_type.lower(),
                 raw_identifier=identifier,
             )
-            safe_redis_operation(prospects_broker.set, cache_key, "1", ex=ttl_seconds)
-            logger.info("✅ Prospect presence updated | Prospect ID=%s | Channel=%s", prospect_id, channel_type)
+            safe_redis_operation(prospects_broker.set, cache_key, "1", ex=3600)
+            logger.info(
+                "✅ Presence updated | AgencyProspectID=%s | Channel=%s",
+                agency_prospect_id,
+                channel_type,
+            )
         except Exception as e:
             logger.error(
-                "❌ Failed to update presence | Prospect ID=%s | Channel=%s | Error=%s",
-                prospect_id,
-                channel_type,
+                "❌ Presence update failed | AgencyProspectID=%s | Error=%s",
+                agency_prospect_id,
                 e,
             )

@@ -1,5 +1,6 @@
 import hashlib
 import logging
+from unittest import result
 from core import db_select
 
 logger = logging.getLogger("CASE_AGENT")
@@ -27,25 +28,40 @@ async def fetch_agent_agency(agent_email: str):
     return None
 
 
-async def fetch_prospect_id(identifier_hash: str):
+async def fetch_prospect_id(identifier_hash: str, agency_id: str):
     """
     Fetches the prospect ID associated with the given prospect email hash.
     Uses 'prospect_id' instead of 'id' to match current contact_methods schema.
     """
     filters = {"identifier_hash": identifier_hash, "channel_type": "email"}
 
-    result = await db_select(
+    global_prospects = await db_select(
         table="contact_methods",
-        fields=["prospect_id"], 
+        fields=["prospect_id"],
         filters=filters,
         limit=1,
     )
 
-    if result and len(result) > 0:
-        prospect_id = result[0].get("prospect_id")
+    if global_prospects and len(global_prospects) > 0:
+        prospect_id = global_prospects[0].get("prospect_id")
         if prospect_id:
-            return str(prospect_id)
+            try:
+                result = await db_select(
+                    table="agency_prospects",
+                    filters={
+                        "agency_id": str(agency_id),
+                        "prospect_id": str(prospect_id),
+                    },
+                    fields="id",
+                    limit=1,
+                )
+                if result and len(result) > 0:
+                    agency_prospect_id = result[0].get("id")
+                    if agency_prospect_id:
+                        return str(agency_prospect_id)
+            except Exception as e:
+                logger.error("❌ Error fetching agency_prospect_id: %s", e)
+                return None
 
     logger.warning("❌ No prospect found for identifier_hash=%s", identifier_hash)
     return None
-

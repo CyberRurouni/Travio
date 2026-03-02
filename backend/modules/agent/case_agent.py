@@ -3,18 +3,17 @@ import hashlib
 import logging
 from datetime import timedelta
 
-from core import AGENT_EMAIL
 from .crud import fetch_agent_agency, fetch_prospect_id
 
 
 logger = logging.getLogger("CASE_AGENT")
 
 
-def is_internal_agent_email(email: str) -> bool:
+def is_internal_agent_email(email: str, agent_email: str) -> bool:
     """
     Checks whether the provided email belongs to our internal agent.
     """
-    return email.strip().lower() == AGENT_EMAIL.strip().lower()
+    return email.strip().lower() == agent_email.strip().lower()
 
 
 class CaseAgent:
@@ -36,7 +35,7 @@ class CaseAgent:
 
         self.agency_id = None
         self.prospect_email = self._extract_prospect_email()
-        self.prospect_id = None
+        self.agency_prospect_id = None
         self.session_id = None
         self.session = None
 
@@ -90,8 +89,7 @@ class CaseAgent:
         logger.info("✅ Prospect email extracted | Email=%s", prospect_emails[0])
         return prospect_emails[0]
 
-    @staticmethod
-    async def resolve_prospect_id(prospect_email: str):
+    async def resolve_prospect_id(self, prospect_email: str):
         """
         Generate hashed identifier from prospect email
         and fetch corresponding prospect ID.
@@ -102,17 +100,17 @@ class CaseAgent:
 
         identifier_hash = hashlib.sha256(prospect_email.encode("utf-8")).hexdigest()
 
-        prospect_id = await fetch_prospect_id(identifier_hash)
+        agency_prospect_id = await fetch_prospect_id(identifier_hash, self.agency_id)
 
-        if not prospect_id:
+        if not agency_prospect_id:
             logger.warning("❌ No prospect found for hashed email")
         else:
-            logger.info("✅ Prospect ID resolved | ProspectID=%s", prospect_id)
+            logger.info("✅ Prospect ID resolved | ProspectID=%s", agency_prospect_id)
 
-        return prospect_id
+        return agency_prospect_id
 
     async def update_prospect_id(self):
-        self.prospect_id = await self.resolve_prospect_id(self.prospect_email)
+        self.agency_prospect_id = await self.resolve_prospect_id(self.prospect_email)
 
     # ---------------------------------------------------------------------
     # Main Execution Flow
@@ -137,11 +135,11 @@ class CaseAgent:
         await self.update_agency_id()
         await self.update_prospect_id()
 
-        if not self.agency_id or not self.prospect_id:
+        if not self.agency_id or not self.agency_prospect_id:
             logger.error(
                 "❌ Cannot continue | AgencyID=%s | ProspectID=%s",
                 self.agency_id,
-                self.prospect_id,
+                self.agency_prospect_id,
             )
             return
 
@@ -150,10 +148,10 @@ class CaseAgent:
         session_registry = InstanceRegistry(ttl=timedelta(hours=1))
 
         session = await session_registry.get_or_create(
-            key=f"{self.agency_id}:{self.prospect_id}",
+            key=f"{self.agency_id}:{self.agency_prospect_id}",
             factory=Session.initiate_session,
             agency_id=str(self.agency_id),
-            prospect_id=str(self.prospect_id),
+            agency_prospect_id=str(self.agency_prospect_id),
             msg=self.message,
             subject=self.subject,
             factory_type="async",
@@ -169,7 +167,7 @@ class CaseAgent:
         logger.info(
             "✅ Session ready | SessionID=%s | ProspectID=%s",
             self.session_id,
-            self.prospect_id,
+            self.agency_prospect_id,
         )
 
         # -------------------- Log Agent & Systme Message --------------------
@@ -195,10 +193,10 @@ class CaseAgent:
         assistant_registry = InstanceRegistry(ttl=timedelta(hours=1))
 
         assistant = await assistant_registry.get_or_create(
-            key=f"{self.agency_id}:{self.prospect_id}:{self.session_id}",
+            key=f"{self.agency_id}:{self.agency_prospect_id}:{self.session_id}",
             factory=Assistant,
             agency_id=str(self.agency_id),
-            prospect_id=str(self.prospect_id),
+            prospect_id=str(self.agency_prospect_id),
             session=self.session,
             factory_type="sync",
         )

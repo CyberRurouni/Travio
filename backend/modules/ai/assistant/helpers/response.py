@@ -32,6 +32,7 @@ Behavior rules:
 def generate_ai_response(
     chat_container: List[Dict[str, str]],
     intent_guard_data: Dict[str, Any],
+    agency_name: str,
 ) -> Dict[str, Any]:
     """
     Generates the AI Travel Assistant response.
@@ -59,7 +60,7 @@ def generate_ai_response(
     """
 
     prompt = f"""
-You are Travio, an AI Travel Assistant.
+You are Travio, an AI Travel Assistant for {agency_name}.
 
 You operate inside a strictly orchestrated system.
 
@@ -428,12 +429,14 @@ FIELD RULES:
             result[key] = (
                 ""
                 if key in ("public_message", "internal_note")
-                else "none"
-                if key == "consent_requested"
-                else {
-                    "type": "general_response",
-                    "details": {"note": "", "reason": "missing_key"},
-                }
+                else (
+                    "none"
+                    if key == "consent_requested"
+                    else {
+                        "type": "general_response",
+                        "details": {"note": "", "reason": "missing_key"},
+                    }
+                )
             )
 
     return result

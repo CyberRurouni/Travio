@@ -12,6 +12,8 @@ async def reevaluate_email(
     sender_id: str,
     conversation_context: list[dict],  # Full history: [{role, content}, ...]
     attempt: int,
+    issued_email: str,
+    app_password: str,
 ) -> dict:
     """
     Stateful re-evaluator.
@@ -71,7 +73,9 @@ async def reevaluate_email(
         # Send clarification email if not resolved
         if resolution != "resolved" and friendly_reply:
             try:
-                smtp = await get_smtp_service()
+                smtp = await get_smtp_service(
+                    issued_email=issued_email, app_password=app_password
+                )
                 await smtp.send_email(
                     to=sender_id,
                     subject="Re: Your message",

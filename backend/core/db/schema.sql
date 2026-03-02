@@ -4,7 +4,7 @@
    ========================================================= */
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS vector;
-
+CREATE EXTENSION IF NOT EXISTS supabase_vault;
 
 
 /* =========================================================
@@ -18,7 +18,7 @@ CREATE TABLE agencies (
     name TEXT NOT NULL,
     issued_email TEXT,         -- email used for identification
     agent_email TEXT,         -- email used by agent to send emails
-    vault_secret_id UUID,      -- reference to Vault secret (if any)
+    vault_secret_id UUID,      -- reference to Vault secret (app password)
     created_at TIMESTAMPTZ DEFAULT now()
 );
 
@@ -95,15 +95,31 @@ CREATE TABLE agency_packages (
    PROSPECTS
    ---------------------------------------------------------
    Every person who has ever contacted an agency.
-   Used for memory, personalization, and continuity.
+   Note: No agency_id here! Prospects are global entities.
    ========================================================= */
 CREATE TABLE prospects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT,
-    agency_id UUID NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
-    psyche_eval TEXT,                   -- qualitative assessment
-    psyche_eval_confidence NUMERIC(3,2), -- confidence score (0–1)
+    psyche_eval TEXT,
+    psyche_eval_confidence NUMERIC(3,2),
     created_at TIMESTAMPTZ DEFAULT now()
+);
+
+
+
+/* =========================================================
+    AGENCY-PROSPECT LINK
+    ---------------------------------------------------------
+    Links prospects to the agencies they've contacted.
+    This enables many-to-many relationship.
+   ========================================================= */
+CREATE TABLE agency_prospects (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Optional, could use composite PK
+    agency_id UUID NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
+    prospect_id UUID NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+    first_contacted_at TIMESTAMPTZ DEFAULT now(),  -- Useful metadata
+    last_contacted_at TIMESTAMPTZ DEFAULT now(),   -- Denormalized for performance     
+    UNIQUE(agency_id, prospect_id)                   -- Prevent duplicates
 );
 
 
@@ -112,14 +128,14 @@ CREATE TABLE prospects (
    CONTACT METHODS
    ---------------------------------------------------------
    All channels/identifiers used by a prospect.
-   Stores HASHED identifiers for privacy.
+   Still per-prospect (global to the person).
    ========================================================= */
 CREATE TABLE contact_methods (
     prospect_id UUID NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
-    channel_type TEXT NOT NULL,         -- whatsapp, email, instagram, etc
-    identifier_hash TEXT NOT NULL,       -- hashed phone/email/handle
+    channel_type TEXT NOT NULL,
+    identifier_hash TEXT NOT NULL,
     created_at TIMESTAMPTZ DEFAULT now(),
-    PRIMARY KEY (channel_type, identifier_hash)
+    PRIMARY KEY (channel_type, identifier_hash)  -- Global uniqueness across all agencies!
 );
 
 
@@ -127,34 +143,16 @@ CREATE TABLE contact_methods (
 /* =========================================================
    PROSPECT PRESENCE
    ---------------------------------------------------------
-   Tracks activity / last contact per channel.
-   Used for follow-up detection.
+   Now linked through agency_prospects to know which agency
+   context the presence is for.
    ========================================================= */
 CREATE TABLE prospect_presence (
-    prospect_id UUID NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Need ID since composite PK changed
+    agency_prospect_id UUID NOT NULL REFERENCES agency_prospects(id) ON DELETE CASCADE,
     channel_type TEXT NOT NULL,
-    raw_identifier TEXT,                -- unhashed (optional, operational)
+    raw_identifier TEXT,
     last_contacted_at TIMESTAMPTZ,
-    PRIMARY KEY (prospect_id, channel_type)
-);
-
-
-
-/* =========================================================
-   PROSPECT INTERESTS
-   ---------------------------------------------------------
-   Captures what packages a prospect is interested in.
-   Also tracks outcomes (e.g., booked).
-   ========================================================= */
-CREATE TABLE prospect_interests (
-    prospect_id UUID NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
-    agency_id UUID NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
-    agency_package UUID REFERENCES agency_packages(id),
-    package_type TEXT,                  -- e.g. 'custom'
-    session_id UUID,                    -- linked later to sessions
-    created_at TIMESTAMPTZ DEFAULT now(),
-    outcome TEXT,                       -- booked, declined, etc
-    PRIMARY KEY (prospect_id, agency_id, created_at)
+    UNIQUE(agency_prospect_id, channel_type)
 );
 
 
@@ -162,23 +160,39 @@ CREATE TABLE prospect_interests (
 /* =========================================================
    SESSIONS
    ---------------------------------------------------------
-   A logical conversation thread around a single intent.
-   Intent can evolve; session ends when outcome is reached.
+   Now linked through agency_prospects to maintain agency context.
    ========================================================= */
 CREATE TABLE sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    prospect_id UUID NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
-    intent TEXT,                        -- exploring, trip_to_x, etc
+    agency_prospect_id UUID NOT NULL REFERENCES agency_prospects(id) ON DELETE CASCADE,
+    intent TEXT,                   -- 'browsing', 'inquiring', 'ready_to_book', etc
     first_impression JSONB DEFAULT NULL,
     change_in_intent BOOLEAN DEFAULT false,
     intent_history JSONB DEFAULT '[]',
     intent_confidence NUMERIC(3,2),
-    constraints TEXT,                   -- budget, time, visa, etc
+    constraints TEXT,             -- e.g., "budget<2000, destination=Miami"
     decision_pending BOOLEAN DEFAULT false,
     initiated_at TIMESTAMPTZ DEFAULT now(),
     last_activity_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     ended_at TIMESTAMPTZ,
     is_ended BOOLEAN DEFAULT false
+);
+
+
+
+/* =========================================================
+   PROSPECT INTERESTS
+   ---------------------------------------------------------
+   Now linked through agency_prospects.
+   ========================================================= */
+CREATE TABLE prospect_interests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agency_prospect_id UUID NOT NULL REFERENCES agency_prospects(id) ON DELETE CASCADE,
+    agency_package UUID REFERENCES agency_packages(id),
+    package_type TEXT,
+    session_id UUID REFERENCES sessions(id),
+    created_at TIMESTAMPTZ DEFAULT now(),
+    outcome TEXT
 );
 
 
@@ -196,6 +210,7 @@ CREATE TABLE chats (
     msg TEXT,
     PRIMARY KEY (session_id, msg_sequence)
 );
+
 
 
 /* =========================================================
@@ -244,7 +259,7 @@ CREATE TABLE recommendation_items (
 CREATE VIEW prospect_snapshot AS
 SELECT
     p.id AS prospect_id,
-    p.agency_id,
+    ap.agency_id,
     p.name,
     p.psyche_eval,
     s.id AS session_id,
@@ -255,12 +270,11 @@ SELECT
     pi.outcome,
     p.created_at
 FROM prospects p
-LEFT JOIN sessions s
-    ON s.prospect_id = p.id
-LEFT JOIN prospect_interests pi
-    ON pi.prospect_id = p.id
-LEFT JOIN prospect_presence pp
-    ON pp.prospect_id = p.id;
+JOIN agency_prospects ap ON ap.prospect_id = p.id
+LEFT JOIN sessions s ON s.agency_prospect_id = ap.id
+LEFT JOIN prospect_interests pi ON pi.agency_prospect_id = ap.id
+LEFT JOIN prospect_presence pp ON pp.agency_prospect_id = ap.id;
+
 
 
 /* =========================================================
@@ -308,12 +322,10 @@ CREATE INDEX idx_packages_agency_created_active
 ON agency_packages (agency_id, created_at DESC)
 WHERE is_active = true;
 
-/* ---------- Prospects ---------- */
-CREATE INDEX idx_prospects_agency_id_name
-ON prospects (agency_id, name);
 
-CREATE INDEX idx_prospects_created_at
-ON prospects (created_at);
+/* ---------- Agency Prospects ---------- */
+CREATE UNIQUE INDEX idx_agency_prospects_agency_prospect
+ON agency_prospects (agency_id, prospect_id);
 
 
 /* ---------- Contact Methods ---------- */
@@ -329,50 +341,53 @@ CREATE INDEX idx_presence_channel_identifier
 ON prospect_presence (channel_type, raw_identifier);
 
 CREATE INDEX idx_presence_prospect_id
-ON prospect_presence (prospect_id);
+ON prospect_presence (agency_prospect_id);
 
 CREATE INDEX idx_presence_last_contacted_at
 ON prospect_presence (last_contacted_at);
 
 CREATE UNIQUE INDEX prospect_presence_unique_channel
-ON prospect_presence (prospect_id, channel_type);
+ON prospect_presence (agency_prospect_id, channel_type);
+
+
+/* ---------- Sessions ---------- */
+CREATE UNIQUE INDEX idx_sessions_active_prospect
+ON sessions (agency_prospect_id)
+WHERE ended_at IS NULL;
+
+CREATE INDEX idx_sessions_prospect_intent
+ON sessions (agency_prospect_id, intent);
+
+CREATE INDEX idx_sessions_initiated_at_desc
+ON sessions (initiated_at DESC);
 
 
 /* ---------- Prospect Interests ---------- */
-CREATE INDEX idx_interests_agency_prospect
-ON prospect_interests (agency_id, prospect_id);
-
+-- Note: The original had a reference to agency_id which doesn't exist in prospect_interests
+-- I've removed that invalid index
 CREATE INDEX idx_interests_created_at
 ON prospect_interests (created_at);
 
 CREATE INDEX idx_interests_session_id
 ON prospect_interests (session_id);
 
-
-/* ---------- Sessions ---------- */
-CREATE UNIQUE INDEX idx_sessions_active_prospect
-ON sessions (prospect_id)
-WHERE ended_at IS NULL;
-
-CREATE INDEX idx_sessions_prospect_intent
-ON sessions (prospect_id, intent);
-
-CREATE INDEX idx_sessions_initiated_at_desc
-ON sessions (initiated_at DESC);
+CREATE INDEX idx_interests_agency_prospect
+ON prospect_interests (agency_prospect_id);
 
 
 /* ---------- Chats ---------- */
 CREATE INDEX idx_chats_session_id
 ON chats (session_id);
 
+
 /* ---------- Recommendation Events ---------- */
-create index idx_re_events_session_created
-on recommendation_events (session_id, created_at desc);
+CREATE INDEX idx_re_events_session_created
+ON recommendation_events (session_id, created_at DESC);
+
 
 /* ---------- Recommendation Items ---------- */
-create index idx_re_items_session_created
-on recommendation_items (session_id, created_at desc);
-
+CREATE INDEX idx_re_items_session_created
+ON recommendation_items (session_id, created_at DESC);
 
 /* =========================================================
    FUNCTION & PROCEDURES & Trigers
@@ -388,48 +403,44 @@ CREATE OR REPLACE FUNCTION register_prospect(
     p_channel_type TEXT,
     p_identifier_hash TEXT
 )
-RETURNS UUID
+RETURNS UUID  -- Returns agency_prospect_id
 LANGUAGE plpgsql
 AS $$
 DECLARE
     v_prospect_id UUID;
+    v_agency_prospect_id UUID;
 BEGIN
-    -- Register Prospect
-    INSERT INTO prospects (agency_id, name)
-    VALUES (p_agency_id, p_name)
-    RETURNING id INTO v_prospect_id;
+    -- First, find or create the global prospect
+    SELECT prospect_id INTO v_prospect_id
+    FROM contact_methods
+    WHERE channel_type = p_channel_type
+      AND identifier_hash = p_identifier_hash;
 
-    -- Register Contact Method (enforces uniqueness)
-    INSERT INTO contact_methods (
-        prospect_id,
-        channel_type,
-        identifier_hash
-    )
-    VALUES (
-        v_prospect_id,
-        p_channel_type,
-        p_identifier_hash
-    );
+    IF v_prospect_id IS NULL THEN
+        -- Create new global prospect
+        INSERT INTO prospects (name)
+        VALUES (p_name)
+        RETURNING id INTO v_prospect_id;
 
-    RETURN v_prospect_id;
+        -- Add contact method
+        INSERT INTO contact_methods (prospect_id, channel_type, identifier_hash)
+        VALUES (v_prospect_id, p_channel_type, p_identifier_hash);
+    END IF;
 
-EXCEPTION
-    WHEN unique_violation THEN
-        -- Contact already exists → fetch owning prospect
-        SELECT prospect_id
-        INTO v_prospect_id
-        FROM contact_methods
-        WHERE channel_type = p_channel_type
-          AND identifier_hash = p_identifier_hash;
+    -- Link prospect to agency (if not already linked)
+    INSERT INTO agency_prospects (agency_id, prospect_id, first_contacted_at, last_contacted_at)
+    VALUES (p_agency_id, v_prospect_id, now(), now())
+    ON CONFLICT (agency_id, prospect_id) 
+    DO UPDATE SET last_contacted_at = now()
+    RETURNING id INTO v_agency_prospect_id;
 
-        RETURN v_prospect_id;
+    RETURN v_agency_prospect_id;
 END;
 $$;
 
-
 /* ----------- Handling Prospect Presence ----------- */
 CREATE OR REPLACE FUNCTION touch_prospect_presence(
-    p_prospect_id UUID,
+    p_agency_prospect_id UUID,
     p_channel_type TEXT,
     p_raw_identifier TEXT
 )
@@ -437,26 +448,22 @@ RETURNS VOID
 LANGUAGE plpgsql
 AS $$
 BEGIN
-    -- 1️⃣ Update last_contacted_at if exists, else insert new row
     INSERT INTO prospect_presence (
-        prospect_id,
+        agency_prospect_id,
         channel_type,
         raw_identifier,
         last_contacted_at
     )
     VALUES (
-        p_prospect_id,
+        p_agency_prospect_id,
         p_channel_type,
         p_raw_identifier,
         now()
     )
-    ON CONFLICT (prospect_id, channel_type)
-    DO UPDATE
-       SET last_contacted_at = now();
-
+    ON CONFLICT (agency_prospect_id, channel_type)
+    DO UPDATE SET last_contacted_at = now();
 END;
 $$;
-
 
 /* ----------- Prune Stale Presence ----------- */
 CREATE OR REPLACE FUNCTION prune_stale_presence()
@@ -471,7 +478,7 @@ $$;
 
 /* ----------- Atomic Initiation Of Sessions ----------- */
 CREATE OR REPLACE FUNCTION initiate_session(
-    p_prospect_id UUID,
+    p_agency_prospect_id UUID,
     p_intent TEXT DEFAULT NULL,
     p_intent_confidence NUMERIC(3,2) DEFAULT NULL,
     p_first_impression JSONB DEFAULT NULL,
@@ -485,7 +492,7 @@ DECLARE
 BEGIN
     -- Try insert
     INSERT INTO sessions (
-        prospect_id,
+        agency_prospect_id,
         intent,
         intent_confidence,
         first_impression,
@@ -495,7 +502,7 @@ BEGIN
         is_ended
     )
     VALUES (
-        p_prospect_id,
+        p_agency_prospect_id,
         p_intent,
         p_intent_confidence,
         p_first_impression,
@@ -511,14 +518,13 @@ BEGIN
     IF v_session_id IS NULL THEN
         SELECT id INTO v_session_id
         FROM sessions
-        WHERE prospect_id = p_prospect_id
+        WHERE agency_prospect_id = p_agency_prospect_id
           AND is_ended = false;
     END IF;
 
     RETURN v_session_id;
 END;
 $$;
-
 
 /* ----------- Update Session Activity ----------- */
 CREATE OR REPLACE FUNCTION touch_session(
@@ -666,6 +672,41 @@ END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
 
+/* ----------- Create Vault Secret ----------- */
+CREATE OR REPLACE FUNCTION public.create_vault_secret(
+    p_secret TEXT,      -- the sensitive value to store (e.g., app password)
+    p_name TEXT,        -- logical grouping or name (e.g., "agency_x")
+    p_description TEXT, -- optional description for reference
+    p_key_id UUID       -- the UUID of the pgsodium key to use (can be NULL)
+)
+RETURNS UUID
+LANGUAGE sql
+SECURITY DEFINER
+AS $$
+    -- We use COALESCE to ensure the Vault extension receives 
+    -- valid types even if parameters are passed as NULL.
+    SELECT vault.create_secret(
+        p_secret,                         -- your secret
+        COALESCE(p_name, '')::text,       -- maps to 'name' in vault
+        COALESCE(p_description, '')::text, -- maps to 'description' in vault
+        p_key_id                          -- must be UUID type (from pgsodium)
+    );
+$$;
+
+/* ----------- Get Vault Secret ----------- */
+CREATE OR REPLACE FUNCTION public.get_vault_secret(
+    p_secret_id UUID -- the UUID of the secret you want to retrieve
+)
+RETURNS TABLE(decrypted_secret TEXT) 
+LANGUAGE sql
+SECURITY DEFINER -- Required to bypass RLS on the vault schema
+AS $$
+    -- decrypted_secrets is a VIEW, so we SELECT from it 
+    -- and filter by the ID column.
+    SELECT decrypted_secret
+    FROM vault.decrypted_secrets
+    WHERE id = p_secret_id;
+$$;
 
 -- ========================================================================
 --  REALTIME CONFIGURATION

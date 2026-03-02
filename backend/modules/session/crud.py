@@ -29,7 +29,7 @@ async def initiate_session(prospect_id: str, payload: Dict[str, Any]) -> UUID | 
 
     try:
         session_data: Dict[str, Any] = {
-            "p_prospect_id": prospect_id,
+            "p_agency_prospect_id": prospect_id,
             "p_intent": payload.get("intent"),
             "p_intent_confidence": payload.get("intent_confidence"),
             "p_first_impression": payload.get("first_impression"),
@@ -100,7 +100,7 @@ async def fetch_ongoing_session(
         result = await db_select(
             table="sessions",
             filters={
-                "prospect_id": prospect_id,
+                "agency_prospect_id": prospect_id,
                 "is_ended": False,
             },
             fields=fields,

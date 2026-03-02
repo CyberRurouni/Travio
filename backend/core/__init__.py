@@ -4,8 +4,7 @@
 
 # Config
 from genesis.config import client, supabase, async_supabase, get_async_supabase
-from genesis.config import fetch_unread_emails
-from genesis.config import AGENT_EMAIL
+from genesis.config import fetch_unread_emails_for_agency
 
 ### ==========
 ### Core
@@ -14,6 +13,7 @@ from genesis.config import AGENT_EMAIL
 # ---------- Utilities ----------
 from .utils.redis_utils import emails_broker, prospects_broker, session_broker, recommendation_broker
 from .utils.redis_utils import emails_stream
+from .utils.redis_utils import RedisStreamHandler
 from .utils.redis_utils import safe_redis_operation
 from .utils.ai_utils import call_openai_safe
 from .utils.instance_registry import InstanceRegistry
@@ -36,6 +36,9 @@ from .db.crud import (
 # ---------
 # Modules
 # ---------
+
+# Agency
+from modules.agency.crud import get_agency_by_id, get_agency_password, get_or_create_agency_email_stream, list_agencies
 
 # Agent
 from modules.agent.case_agent import CaseAgent, is_internal_agent_email

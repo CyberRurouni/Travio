@@ -202,14 +202,14 @@ logging.basicConfig(level=logging.INFO)
 async def smart_package_search(
     user_request: dict,
     session_id: str,
-    prospect_id: str,
+    agency_prospect_id: str,
 ) -> list[dict]:
     results = []
     exclude_previous_ids = user_request.get("exclude_previous_ids", False)
     try:
         logger.info(
             "🧠 Starting smart package search | Prospect=%s | Exclude previous: %s",
-            prospect_id,
+            agency_prospect_id,
             exclude_previous_ids,
         )
 
@@ -255,7 +255,7 @@ async def smart_package_search(
         # 3️⃣ Handle exclude_previous_ids
         try:
             prev_ids_label = "EXCLUDE_PREV_IDS_CLAUSE"
-            cache_key = f"prev_package_ids:{session_id}:{prospect_id}"
+            cache_key = f"prev_package_ids:{session_id}:{agency_prospect_id}"
             prev_ids = []
 
             if exclude_previous_ids:
@@ -306,7 +306,7 @@ async def smart_package_search(
         except Exception as e:
             logger.warning("⚠️ Failed caching new package IDs: %s", e)
 
-        logger.info("🧠 Smart package search completed for prospect %s", prospect_id)
+        logger.info("🧠 Smart package search completed for prospect %s", agency_prospect_id)
 
     except Exception as e:
         logger.critical("❌ Unexpected error in smart_package_search: %s", e)
@@ -315,11 +315,11 @@ async def smart_package_search(
 
 
 async def db_scanning(
-    user_note: str, session_id: str, prospect_id: str, exclude_previous_ids: bool
+    user_note: str, session_id: str, agency_prospect_id: str, exclude_previous_ids: bool
 ):
     response = {"results": [], "message": "⚠️ Scan failed."}
     try:
-        logger.info("🔍 Starting DB scan | Prospect=%s", prospect_id)
+        logger.info("🔍 Starting DB scan | Prospect=%s", agency_prospect_id)
         logger.info("📝 User note:\n%s", user_note)
 
         # Formulate structured request
@@ -336,7 +336,7 @@ async def db_scanning(
             raw_search_results = await smart_package_search(
                 user_request=search_request,
                 session_id=session_id,
-                prospect_id=prospect_id,
+                agency_prospect_id=agency_prospect_id,
             )
         except Exception as e:
             logger.error("❌ Smart package search failed: %s", e)
@@ -404,7 +404,7 @@ async def db_scanning(
         except Exception as e:
             logger.warning("⚠️ Failed generating summary message: %s", e)
 
-        logger.info("🔍 DB scan completed for prospect %s", prospect_id)
+        logger.info("🔍 DB scan completed for prospect %s", agency_prospect_id)
 
     except Exception as e:
         logger.critical("❌ Unexpected error in db_scanning: %s", e)

@@ -1,9 +1,7 @@
-import os
 import json
 import asyncio
 import logging
 
-from collections import defaultdict
 from datetime import timedelta
 
 logging.basicConfig(
@@ -16,104 +14,159 @@ logger = logging.getLogger("AI_EMAIL_ASSISTANT")
 
 class EmailService:
     """
-    Centralized Email Service responsible for:
-    - Running IMAP IDLE + scanning in a background thread
-    - Consuming emails from Redis
-    - Processing email business logic
+    Multi-agency Email Service.
+
+    - One perpetual IMAP worker thread per agency (24/7, IDLE-based)
+    - When an IMAP scan finds new emails → triggers a short-lived processor
+      for ONLY that agency to drain its Redis stream then exit
+    - No perpetual polling loop — processor only runs when there's work to do
     """
 
-    # Enforce a SINGLE IMAP worker process-wide
-    imap_lock = asyncio.Lock()
-    _imap_task_started = False
+    _running_imap_workers: set[str] = set()
+    _imap_lock = asyncio.Lock()
 
     def __init__(self):
         logger.info("📦 EmailService initialized")
 
     # ─────────────────────────────────────────────
-    # IMAP Worker (fire-and-forget, thread-backed)
+    # Startup: one perpetual IMAP worker per agency
     # ─────────────────────────────────────────────
-    async def start_imap_worker(self):
+    async def start_all_imap_workers(self):
         """
-        Starts the IMAP worker ONCE.
-        Runs forever in a background thread.
+        Load all agencies from DB and start one perpetual IMAP thread per agency.
+        Safe to call multiple times — skips already-running workers.
         """
-        from core import fetch_unread_emails
+        from core import list_agencies, get_agency_password
 
-        async with EmailService.imap_lock:
-            if EmailService._imap_task_started:
-                logger.info("📡 IMAP worker already running")
-                return
+        agencies = await list_agencies()
 
-            logger.info("📡 Starting IMAP worker thread")
+        if not agencies:
+            logger.warning("⚠️ No agencies found. No IMAP workers started.")
+            return
 
-            asyncio.create_task(
-                asyncio.to_thread(fetch_unread_emails),
-                name="imap-worker",
+        loop = asyncio.get_event_loop()
+
+        async with EmailService._imap_lock:
+            for agency in agencies:
+                agency_id = str(agency["id"])
+
+                if agency_id in EmailService._running_imap_workers:
+                    logger.info(f"[{agency_id}] 📡 IMAP worker already running")
+                    continue
+
+                # Decrypt password from Vault before handing to thread
+                password = await get_agency_password(agency)
+                if not password:
+                    logger.error(
+                        f"[{agency_id}] ❌ Could not retrieve password, skipping"
+                    )
+                    continue
+
+                # Attach decrypted password to agency dict for the thread
+                agency_with_pass = {**agency, "app_password": password}
+
+                logger.info(
+                    f"[{agency_id}] 📡 Starting IMAP worker for {agency['issued_email']}"
+                )
+
+                asyncio.create_task(
+                    asyncio.to_thread(
+                        self._run_imap_worker,
+                        agency_with_pass,
+                        loop,
+                    ),
+                    name=f"imap-worker-{agency_id}",
+                )
+
+                EmailService._running_imap_workers.add(agency_id)
+
+        logger.info(
+            f"✅ {len(EmailService._running_imap_workers)} IMAP worker(s) running"
+        )
+
+    # ─────────────────────────────────────────────
+    # Thread target: wraps the perpetual IMAP loop
+    # ─────────────────────────────────────────────
+    def _run_imap_worker(self, agency: dict, loop: asyncio.AbstractEventLoop):
+        """
+        Runs in a background thread (via asyncio.to_thread).
+        Passes a callback so scanning can trigger the async processor
+        without blocking the thread.
+        """
+        from core import fetch_unread_emails_for_agency
+
+        def on_new_emails(agency_id: str):
+            """
+            Called from the IMAP thread only when new emails were published.
+            Schedules a short-lived processor coroutine on the event loop.
+            """
+            asyncio.run_coroutine_threadsafe(
+                self._trigger_processor(agency_id),
+                loop,
             )
 
-            EmailService._imap_task_started = True
+        fetch_unread_emails_for_agency(agency, on_new_emails=on_new_emails)
 
     # ─────────────────────────────────────────────
-    # Perpetual Email Processor (Redis consumer)
+    # Triggered processor — runs only when needed
     # ─────────────────────────────────────────────
-    async def perpetual_email_processor(self):
+    async def _trigger_processor(self, agency_id: str):
         """
-        Continuously consumes emails from Redis and processes them.
+        Short-lived processor for one agency.
+        Drains that agency's Redis stream completely, then exits.
+
+        This is NOT a perpetual loop — it starts when emails arrive
+        and stops when the stream is empty.
         """
-        from core import emails_stream
+        from core import get_or_create_agency_email_stream, get_agency_password
 
-        logger.info("📨 Email processor started")
+        stream = get_or_create_agency_email_stream(agency_id)
+        app_password = await get_agency_password(agency_id)
+        logger.info(f"[{agency_id}] ⚡ Processor triggered")
 
-        while True:
-            try:
-                emails = emails_stream.consume(
+        processed = 0
+        try:
+            while True:
+                emails = stream.consume(
                     count=5,
                     use_group=True,
-                    consumer_name="email_processor_1",
-                    block_ms=5000,
+                    consumer_name=f"processor_{agency_id}",
+                    block_ms=1000,  # short block — exits fast when stream is empty
                 )
 
                 if not emails:
-                    continue
+                    break  # stream drained, processor exits cleanly
 
-                tasks = []
-                for email in emails:
-                    tasks.append(
-                        asyncio.create_task(
-                            self.process_email(email),
-                            name=f"process-email-{email[0]}",
-                        )
+                tasks = [
+                    asyncio.create_task(
+                        self.process_email(email_event, agency_id, app_password),
+                        name=f"process-{agency_id}-{email_event[0]}",
                     )
+                    for email_event in emails
+                ]
 
                 results = await asyncio.gather(*tasks, return_exceptions=True)
+                processed += len(tasks)
 
-                # Log any task failures
                 for i, result in enumerate(results):
                     if isinstance(result, Exception):
-                        logger.error(f"❌ Email processing task {i} failed: {result}")
+                        logger.error(f"[{agency_id}] ❌ Task {i} failed: {result}")
 
-            except Exception as e:
-                logger.error(f"❌ Email consumer loop error: {e}", exc_info=True)
-                await asyncio.sleep(1)  # Prevent tight error loop
+        except Exception as e:
+            logger.error(f"[{agency_id}] ❌ Processor error: {e}", exc_info=True)
+
+        logger.info(f"[{agency_id}] ✅ Processor done — {processed} email(s) handled")
 
     # ─────────────────────────────────────────────
-    # Email Processing Logic (async-safe)
+    # Core email processing logic
     # ─────────────────────────────────────────────
-    async def process_email(self, email):
+    async def process_email(self, email_event: tuple, agency_id: str, app_password: str):
         """
-        Process a single email event safely.
-
-        Flow:
-        - Validate payload
-        - Classify sender intent
-        - Resolve / register prospect
-        - Create or reuse session
-        - Generate assistant response
-        - Acknowledge Redis event
+        Process a single email for a specific agency.
+        All agency context comes from the Redis payload — no env vars.
         """
         from core import (
-            emails_stream,
-            AGENT_EMAIL,
+            get_or_create_agency_email_stream,
             classify_sender,
             is_internal_agent_email,
             HandleProspect,
@@ -122,54 +175,53 @@ class EmailService:
             Assistant,
             CaseAgent,
         )
-        from ..helpers.utils import extract_clean_email_body
+        from .utils import extract_clean_email_body
 
-        email_id, content = email
-        logger.info(f"📩 Processing email | ID={email_id}")
+        email_id, content = email_event
+        logger.info(f"[{agency_id}] 📩 Processing email | ID={email_id}")
+
+        stream = get_or_create_agency_email_stream(agency_id)
 
         try:
-            # ─── Guard: empty payload ──────────────────────────────
+            # ─── Guard: empty payload ─────────────────────────────
             if content is None:
-                logger.warning(f"⚠️ Empty email payload | ID={email_id}")
+                logger.warning(f"[{agency_id}] ⚠️ Empty payload | ID={email_id}")
                 return
 
-            # ─── Guard: invalid JSON ──────────────────────────────
+            # ─── Guard: parse JSON ────────────────────────────────
             if isinstance(content, str):
                 try:
                     content = json.loads(content)
                 except json.JSONDecodeError:
-                    logger.error(f"❌ Invalid JSON payload | ID={email_id}")
+                    logger.error(f"[{agency_id}] ❌ Invalid JSON | ID={email_id}")
                     return
 
-            # ─── Guard: unsupported payload type ──────────────────
             if not isinstance(content, dict):
-                logger.error(f"❌ Unsupported payload type | ID={email_id}")
+                logger.error(f"[{agency_id}] ❌ Bad payload type | ID={email_id}")
                 return
 
-            # ─── Normalize email fields ───────────────────────────
+            # ─── Extract fields (all from payload) ───────
+            issued_email = content.get("issued_email") or ""
+            agent_email = content.get("agent_email") or ""
+            agency_name = content.get("agency_name") or "Unknown Agency"
             sender_email = content.get("sender_email") or "unknown@unknown"
             sender_name = content.get("sender_name") or "Unknown"
             subject = content.get("subject") or "No Subject"
             body = content.get("body") or ""
 
-            # ─── Strip email reply tail ──────────────────────────
             message = extract_clean_email_body(body=body)
 
-            # ─── Guard: internal agent email ───────────────────────
-            if is_internal_agent_email(sender_email):
-                logger.info(f"👤 Email from internal agent | Email={sender_email}")
-
-                # ─── Agent lifecycle ──────────────────────────────
+            # ─── Guard: internal agent email ──────────────────────
+            if is_internal_agent_email(sender_email, agent_email):
+                logger.info(
+                    f"[{agency_id}] 👤 Internal agent email from {sender_email}"
+                )
                 case_agent = CaseAgent(
                     agent_email=sender_email,
                     msg=message,
                     subject=subject,
                 )
-
-                # ─── Execute agent final message flow ─────────────────
                 await case_agent.final_message()
-
-                # ─── Done processing internal agent email ─────────────
                 return
 
             # ─── Classify sender intent ───────────────────────────
@@ -177,86 +229,79 @@ class EmailService:
                 sender_id=sender_email,
                 subject=subject,
                 message=message,
+                issued_email=issued_email,
+                app_password=app_password,
             )
+            logger.info(f"[{agency_id}] 🧪 Classification: {classification}")
 
-            logger.info(f"🧪 Classification result | {classification}")
-
-            # ─── Guard: not a prospect ────────────────────────────
             if classification.get("is_prospect") is False:
                 return
 
-            # ─── Prospect lifecycle ──────────────────────────────
+            # ─── Prospect lifecycle ───────────────────────────────
             prospect_registry = InstanceRegistry(ttl=timedelta(hours=1))
-
             prospect: HandleProspect = await prospect_registry.get_or_create(
-                key=sender_email,
+                key=f"{agency_id}:{sender_email}",  # scoped to agency
                 factory=HandleProspect.create,
-                issued_email=str(os.getenv("EMAIL")),
+                issued_email=issued_email,
                 prospect_name=sender_name,
                 identifier=sender_email,
                 factory_type="async",
             )
 
-            # ─── Prospect registration ───────────────────────────
-            agency_id, prospect_id = await prospect.register(channel_type="email")
+            agency_db_id, agency_prospect_id = await prospect.register(channel_type="email")
 
-            # ─── Guard: failed prospect registration ─────────────
-            if not agency_id or not prospect_id:
-                logger.error("❌ Prospect registration failed")
+            if not agency_db_id or not agency_prospect_id:
+                logger.error(f"[{agency_id}] ❌ Prospect registration failed")
                 return
 
-            # ─── Prospect presence update ────────────────────────
             await prospect.mark_presence(channel_type="email")
 
-            # ─── Session lifecycle ───────────────────────────────
+            # ─── Session lifecycle ────────────────────────────────
             session_registry = InstanceRegistry(ttl=timedelta(hours=1))
-
             session = await session_registry.get_or_create(
-                key=f"{agency_id}:{prospect_id}",
+                key=f"{agency_db_id}:{agency_prospect_id}",
                 factory=Session.initiate_session,
-                agency_id=str(agency_id),
-                prospect_id=str(prospect_id),
+                agency_id=str(agency_db_id),
+                agency_prospect_id=str(agency_prospect_id),
                 msg=message,
                 subject=subject,
                 factory_type="async",
             )
 
             if session is None:
-                logger.error(f"❌ Session creation failed | Prospect ID={prospect_id}")
-                return  # safely exit without calling chat_container
+                logger.error(
+                    f"[{agency_id}] ❌ Session failed | Prospect={agency_prospect_id}"
+                )
+                return
 
             # ─── Persist inbound message ─────────────────────────
-            await session.chat_container(
-                sender="prospect",
-                text=message,
-            )
+            await session.chat_container(sender="prospect", text=message)
 
-            # ─── Assistant lifecycle ─────────────────────────────
+            # ─── Assistant lifecycle ──────────────────────────────
             assistant_registry = InstanceRegistry(ttl=timedelta(hours=1))
-
             assistant = await assistant_registry.get_or_create(
-                key=f"{agency_id}:{prospect_id}:{session.session_id}",
+                key=f"{agency_db_id}:{agency_prospect_id}:{session.session_id}",
                 factory=Assistant,
-                agency_id=str(agency_id),
-                prospect_id=str(prospect_id),
+                agency_id=str(agency_db_id),
+                agency_prospect_id=str(agency_prospect_id),
+                issued_email=issued_email,
+                app_password=app_password,
                 session=session,
                 factory_type="sync",
             )
 
-            # ─── Assistant response generation ───────────────────
             await assistant.response(
                 prospect_email=sender_email,
                 msg=message,
-                subject = subject,
+                subject=subject,
                 first_impression=session._cached_first_impression,
-                agent_email=AGENT_EMAIL,
+                agent_email=agent_email,
+                agency_name=agency_name,
             )
 
         except Exception:
-            # ─── Guard: unhandled processing error ───────────────
-            logger.exception(f"🔥 Failed processing email | ID={email_id}")
+            logger.exception(f"[{agency_id}] 🔥 Failed | ID={email_id}")
 
         finally:
-            # ─── Finalize: acknowledge Redis event ───────────────
-            emails_stream._acknowledge(email_id)
-            logger.info(f"✅ Email acknowledged | ID={email_id}")
+            stream._acknowledge(email_id)
+            logger.info(f"[{agency_id}] ✅ Acknowledged | ID={email_id}")

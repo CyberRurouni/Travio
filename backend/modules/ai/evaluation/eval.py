@@ -15,7 +15,9 @@ NEEDS_REEVAL_TTL_SECONDS = 7 * 24 * 60 * 60
 MAX_UNIDENTIFIED_ATTEMPTS = 3
 
 
-async def classify_sender(sender_id: str, subject: str, message: str) -> dict:
+async def classify_sender(
+    sender_id: str, subject: str, message: str, issued_email: str, app_password: str
+) -> dict:
     """
     Full stateful sender classification with re-evaluation logic.
     """
@@ -99,6 +101,8 @@ async def classify_sender(sender_id: str, subject: str, message: str) -> dict:
                 sender_id=sender_id,
                 conversation_context=conversation_context,
                 attempt=attempts,
+                issued_email=issued_email,
+                app_password=app_password,
             )
 
             # Update attempts
@@ -187,6 +191,8 @@ async def classify_sender(sender_id: str, subject: str, message: str) -> dict:
             sender_id=sender_id,
             conversation_context=initial_context,
             attempt=1,
+            issued_email=issued_email,
+            app_password=app_password,
         )
 
         updated_context = result.get("updated_context", initial_context)

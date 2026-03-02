@@ -19,6 +19,7 @@ async def generate_embeddings(text: str) -> List[float]:
     """
     try:
         from core import client
+
         # Use asyncio.to_thread in case client is sync
         resp = await asyncio.to_thread(
             client.embeddings.create,
@@ -41,6 +42,7 @@ async def generate_package_embedding(package: dict) -> Optional[List[float]]:
     """
     try:
         from core import db_update, format_packages
+
         package_id = package.get("id")
         if not package_id:
             logger.error("❌ Package dict missing 'id'")
@@ -88,12 +90,14 @@ def hash_identifier(raw_identifier: str) -> str:
 # =========================================
 # SMTP Service Instance Getter
 # =========================================
-async def get_smtp_service():
+async def get_smtp_service(issued_email, app_password):
     from core import InstanceRegistry, SMTPService
 
     smtp_registry = InstanceRegistry(ttl=timedelta(hours=6))
     return await smtp_registry.get_or_create(
         key="smtp_service",
         factory=SMTPService,
+        issued_email=issued_email,
+        app_password=app_password,
         factory_type="sync",
     )

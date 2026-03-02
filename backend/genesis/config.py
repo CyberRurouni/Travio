@@ -2,16 +2,17 @@ import json
 import hashlib
 import os
 import time
-import imaplib  # Built-in IMAP library, fully compatible with Python 3.14
-import email  # Built-in library for parsing email messages
+import imaplib
+import email
+from typing import Optional, Callable
 from logging import getLogger, basicConfig, Formatter, StreamHandler
-from email import utils  # For parsing email addresses
+from email import utils
 from dotenv import load_dotenv
 from openai import OpenAI
 from supabase import create_client, create_async_client
 
 # ----------------------------
-# Logger setup 
+# Logger setup
 # ----------------------------
 basicConfig(level="INFO")
 logger = getLogger("CONFIG")
@@ -24,17 +25,14 @@ logger.addHandler(handler)
 # Environment variables
 # ----------------------------
 load_dotenv()
-EMAIL = os.getenv("EMAIL") or ""
-PASSWORD = (os.getenv("PASSWORD") or "").strip()
-AGENT_EMAIL = os.getenv("AGENT_EMAIL") or ""
 
-IMAP_SERVER = "imap.gmail.com"  # Gmail IMAP server
-IDLE_TIMEOUT = 60 * 25  # 25 minutes; Gmail requires exiting IDLE periodically
+IMAP_SERVER = "imap.gmail.com"
+IDLE_TIMEOUT = 60 * 25  # 25 minutes
 
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") or ""
 
 # ----------------------------
-# Initialization of OpenAI client
+# OpenAI / OpenRouter client
 # ----------------------------
 client = OpenAI(
     api_key=OPENROUTER_API_KEY,
@@ -42,7 +40,7 @@ client = OpenAI(
 )
 
 # ----------------------------
-# Supabase client setup
+# Supabase clients
 # ----------------------------
 SB_URL = os.getenv("SB_URL") or ""
 SB_SERVICE_ROLE_KEY = os.getenv("SB_SERVICE_ROLE_KEY") or ""
@@ -55,51 +53,50 @@ async_supabase = None
 async def get_async_supabase():
     global async_supabase
     if async_supabase is None:
-        async_supabase = await create_async_client(
-            SB_URL,
-            SB_SERVICE_ROLE_KEY,
-        )
+        async_supabase = await create_async_client(SB_URL, SB_SERVICE_ROLE_KEY)
         return async_supabase
 
 
 # ----------------------------
-# Function to fetch and process unread emails
+# Per-agency IMAP scanning
 # ----------------------------
-def scanning(mail):
+def scanning(mail, agency: dict) -> int:
     """
-    RESPONSIBILITY:
-    - Fetch unread emails from IMAP
-    - Normalize into email_event
-    - Publish to Redis
-    - Mark as read
-    - Deduplicate using Message-ID or content hash
-    """
+    Fetch unread emails for a specific agency and publish
+    to that agency's Redis stream.
 
+    Returns the count of newly published emails so the caller
+    knows whether to trigger the processor.
+    """
     from core import (
         safe_redis_operation,
         emails_broker,
-        emails_stream,
-    )  # Avoid circular import
+        get_or_create_agency_email_stream,
+    )
+
+    agency_id = str(agency["id"])
+    stream = get_or_create_agency_email_stream(agency_id)
 
     mail.select("INBOX")
-
     status, data = mail.search(None, "UNSEEN")
     if status != "OK":
-        logger.error("⚠️ Failed to search emails.")
-        return
+        logger.error(f"[{agency_id}] ⚠️ Failed to search emails.")
+        return 0
 
     email_ids = data[0].split()
     if not email_ids:
-        logger.info("📭 No new emails found.")
-        return
+        logger.info(f"[{agency_id}] 📭 No new emails.")
+        return 0
 
-    logger.info(f"📬 Found {len(email_ids)} unread email(s).")
+    logger.info(f"[{agency_id}] 📬 Found {len(email_ids)} unread email(s).")
+
+    published = 0
 
     for eid in email_ids:
         try:
             status, msg_data = mail.fetch(eid, "(RFC822)")
             if status != "OK":
-                logger.error(f"⚠️ Failed to fetch email UID {eid}")
+                logger.error(f"[{agency_id}] ⚠️ Failed to fetch email UID {eid}")
                 continue
 
             raw_email = msg_data[0][1]
@@ -110,7 +107,6 @@ def scanning(mail):
             message_id = msg.get("Message-ID")
             body = ""
 
-            # Extract plain-text body only
             if msg.is_multipart():
                 for part in msg.walk():
                     if part.get_content_type() == "text/plain" and not part.get(
@@ -119,43 +115,39 @@ def scanning(mail):
                         payload = part.get_payload(decode=True)
                         if isinstance(payload, bytes):
                             body = payload.decode(
-                                part.get_content_charset() or "utf-8",
-                                errors="replace",
+                                part.get_content_charset() or "utf-8", errors="replace"
                             )
                         break
             else:
                 payload = msg.get_payload(decode=True)
                 if isinstance(payload, bytes):
                     body = payload.decode(
-                        msg.get_content_charset() or "utf-8",
-                        errors="replace",
+                        msg.get_content_charset() or "utf-8", errors="replace"
                     )
                 else:
                     body = payload or ""
 
             body = body.strip() if isinstance(body, str) else ""
 
-            # Deduplication key: Message-ID or fallback hash
+            # Dedup key scoped to agency
             if message_id:
-                seen_msg = f"email:seen:{message_id}"
+                seen_key = f"email:seen:{agency_id}:{message_id}"
             else:
-                # Fallback hash of sender + subject + body
                 hash_input = f"{sender_email}|{subject}|{body}".encode()
                 dedup_hash = hashlib.sha256(hash_input).hexdigest()
-                seen_msg = f"email:seen:{dedup_hash}"
+                seen_key = f"email:seen:{agency_id}:{dedup_hash}"
 
-            # Check if email is already processed
-            if safe_redis_operation(emails_broker.exists, seen_msg):
-                logger.info(f"🛑 Skipping duplicate email (UID={eid})")
-                # Still mark as read to avoid refetch
+            if safe_redis_operation(emails_broker.exists, seen_key):
+                logger.info(f"[{agency_id}] 🛑 Duplicate email skipped (UID={eid})")
                 mail.store(eid, "+FLAGS", "\\Seen")
                 continue
 
-            # Mark seen_msg in Redis with 1 hr expiration
-            safe_redis_operation(emails_broker.set, seen_msg, 1, ex=3600)
+            safe_redis_operation(emails_broker.set, seen_key, 1, ex=3600)
 
-            # Construct email_event
             email_event = {
+                "agency_id": agency_id,
+                "issued_email": agency["issued_email"],
+                "agent_email": agency["agent_email"],
                 "sender_name": sender_name,
                 "sender_email": sender_email,
                 "subject": subject,
@@ -164,48 +156,42 @@ def scanning(mail):
                 "received_at": time.time(),
             }
 
-            # Publish to Redis (fire-and-forget)
-            emails_stream.publish(json.dumps(email_event))
+            stream.publish(json.dumps(email_event))
+            published += 1
 
-            logger.info(f"📨 Published email from {sender_email} to Redis (UID={eid})")
+            logger.info(f"[{agency_id}] 📨 Published email from {sender_email}")
 
             # Mark as read ONLY after successful publish
             mail.store(eid, "+FLAGS", "\\Seen")
 
         except Exception as e:
-            logger.error(f"🔥 Failed to process email UID {eid}: {e}", exc_info=True)
+            logger.error(
+                f"💥 Error processing email UID {eid}: {e} for agency {agency_id}",
+                exc_info=True,
+            )
+
+    return published
 
 
 # ----------------------------
-# Function to enter IDLE mode
+# IMAP IDLE
 # ----------------------------
 def idle(mail):
-    """
-    Enters IMAP IDLE mode and waits for mailbox changes
-    or timeout, then exits cleanly.
-    """
     tag = mail._new_tag()
     mail.send(f"{tag.decode()} IDLE\r\n".encode())
-
-    # Server must acknowledge IDLE
     resp = mail.readline()
     if not resp.startswith(b"+"):
         raise RuntimeError(f"❌ IDLE not acknowledged: {resp}")
 
     logger.info("😴 IDLE started")
-
     start = time.time()
     while time.time() - start < IDLE_TIMEOUT:
         resp = mail.readline()
-
         if resp.startswith(b"* "):
             logger.info("⚡ Mailbox change detected!")
             break
 
-    # 🚪 Exit IDLE
     mail.send(b"DONE\r\n")
-
-    # 🧹 CRITICAL: Drain tagged OK response
     while True:
         resp = mail.readline()
         if resp.startswith(tag):
@@ -214,30 +200,44 @@ def idle(mail):
 
 
 # ----------------------------
-# Persistent IDLE loop
+# Per-agency persistent IMAP worker
 # ----------------------------
-def fetch_unread_emails():
+def fetch_unread_emails_for_agency(agency: dict, on_new_emails: Callable):
     """
-    Persistent IMAP worker.
-    - Keeps one IMAP connection alive
-    - Enters IDLE
-    - Scans on mailbox change or timeout
-    - Reconnects on failure
+    Perpetual IMAP worker for a single agency. Runs 24/7 in its own thread.
+
+    Flow per cycle:
+      1. IDLE — blocks until mailbox event or 25-min timeout (zero CPU)
+      2. scanning() — fetches unseen emails, publishes to Redis, returns count
+      3. If count > 0 and on_new_emails is set → fires the callback
+         so a short-lived processor is triggered on the async event loop.
+
+    The processor is only triggered when there are actual emails to handle.
+    Empty scans (e.g. timeout-only cycles with no new mail) are silent.
     """
+    agency_id = str(agency["id"])
+    email_addr = agency["issued_email"]
+    password = agency["app_password"]  # decrypted app password from Vault
+
     while True:
         mail = None
         try:
             mail = imaplib.IMAP4_SSL(IMAP_SERVER)
-            mail.login(EMAIL, PASSWORD)
+            mail.login(email_addr, password)
             mail.select("INBOX")
 
-            logger.info("🤖 AI assistant online. Waiting for emails...")
+            logger.info(f"[{agency_id}] 🤖 IMAP online for {email_addr}")
+
             while True:
-                idle(mail)  # Block until change or timeout
-                scanning(mail)  # Fetch + publish
+                idle(mail)
+                published = scanning(mail, agency)
+
+                # Only trigger processor when emails were actually published
+                if published > 0 and on_new_emails:
+                    on_new_emails(agency_id)
 
         except Exception as e:
-            logger.error(f"🔥 IMAP error: {e}. Reconnecting in 5s...")
+            logger.error(f"[{agency_id}] 🔥 IMAP error: {e}. Reconnecting in 5s...")
 
         finally:
             try:
@@ -245,5 +245,4 @@ def fetch_unread_emails():
                     mail.logout()
             except Exception:
                 pass
-
             time.sleep(5)

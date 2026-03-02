@@ -12,15 +12,25 @@ logger = logging.getLogger("ASSISTANT")
 
 class Assistant:
 
-    def __init__(self, agency_id: str, prospect_id: str, session: Session) -> None:
+    def __init__(
+        self,
+        agency_id: str,
+        agency_prospect_id: str,
+        issued_email: str,
+        app_password: str,
+        session: Session,
+    ) -> None:
         self.agency_id = agency_id
-        self.prospect_id = prospect_id
+        self.agency_prospect_id = agency_prospect_id
+        self.issued_email = issued_email
+        self.app_password = app_password
         self.session = session
 
     async def response(
         self,
         prospect_email: str,
         agent_email: str,
+        agency_name: str,
         msg: str,
         first_impression: dict,
         subject: str = "Not Provided",
@@ -35,7 +45,11 @@ class Assistant:
         )
         chat_history, is_prospect_first_msg = result or ([], True)
 
-        log_chat_history_readable(chat_history, prospect_id=self.prospect_id, session_id=self.session.session_id)
+        log_chat_history_readable(
+            chat_history,
+            agency_prospect_id=self.agency_prospect_id,
+            session_id=self.session.session_id,
+        )
 
         # -------------------- Intent analysis --------------------
         intent_guard_data = {}
@@ -55,6 +69,7 @@ class Assistant:
         ai_result = generate_ai_response(
             chat_container=chat_history,
             intent_guard_data=intent_guard_data if intent_guard_data else None,
+            agency_name=agency_name,
         )
 
         action_type = ai_result.get("actions", {}).get("type")
@@ -64,27 +79,30 @@ class Assistant:
             logger.warning("⚠️ Missing action type")
             return
 
-        smtp_service = await get_smtp_service()
+        smtp_service = await get_smtp_service(
+            issued_email=self.issued_email, app_password=self.app_password
+        )
 
         # -------------------- Delegate to Action Layer --------------------
         await handle_action(
             assistant=self,
-            subject = subject,
+            subject=subject,
             action_type=action_type,
             action_details=action_details,
             ai_result=ai_result,
             smtp_service=smtp_service,
             prospect_email=prospect_email,
             agent_email=agent_email,
+            agency_name=agency_name,
             sender=sender,
             intent_guard_data=intent_guard_data,
-            prospect_id= self.prospect_id,
-            session_id= self.session.session_id
+            agency_prospect_id=self.agency_prospect_id,
+            session_id=self.session.session_id,
         )
 
         logger.info(
             "📨 AI response processed | Session=%s | Prospect=%s | Action=%s",
             self.session.session_id,
-            self.prospect_id,
+            self.agency_prospect_id,
             action_type,
         )

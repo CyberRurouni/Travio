@@ -15,14 +15,22 @@ class SMTPService:
     - Retries sending messages to avoid losing emails.
     """
 
-    def __init__(self, retries: int = 1):
+    def __init__(self, issued_email, app_password, retries: int = 1):
         self.SMTP_HOST = os.getenv("SMTP_HOST", "smtp.gmail.com")
         self.SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-        self.SMTP_USERNAME = os.getenv("EMAIL")
-        self.SMTP_PASSWORD = os.getenv("PASSWORD")
-        self.FROM_EMAIL = os.getenv("FROM_EMAIL") or self.SMTP_USERNAME
+        self.SMTP_USERNAME = issued_email
+        self.SMTP_PASSWORD = app_password
+        self.FROM_EMAIL = issued_email
 
-        if not all([self.SMTP_HOST, self.SMTP_PORT, self.SMTP_USERNAME, self.SMTP_PASSWORD, self.FROM_EMAIL]):
+        if not all(
+            [
+                self.SMTP_HOST,
+                self.SMTP_PORT,
+                self.SMTP_USERNAME,
+                self.SMTP_PASSWORD,
+                self.FROM_EMAIL,
+            ]
+        ):
             raise RuntimeError("SMTP configuration incomplete")
 
         self._server: smtplib.SMTP | None = None
@@ -35,7 +43,7 @@ class SMTPService:
         logger.debug("🔐 Connecting to SMTP server")
         server = smtplib.SMTP(self.SMTP_HOST, self.SMTP_PORT, timeout=20)
         server.starttls()
-        server.login(self.SMTP_USERNAME, self.SMTP_PASSWORD) # type: ignore
+        server.login(self.SMTP_USERNAME, self.SMTP_PASSWORD)  # type: ignore
         self._server = server
         logger.info("✅ SMTP connection established")
 
@@ -66,16 +74,20 @@ class SMTPService:
         attempt = 0
         while attempt <= self._retries:
             try:
-                self._server.send_message(msg) # type: ignore
+                self._server.send_message(msg)  # type: ignore
                 logger.info(f"✅ Email sent successfully | To={to}")
                 return
             except (smtplib.SMTPServerDisconnected, smtplib.SMTPException) as e:
-                logger.warning(f"⚠️ SMTP send failed, reconnecting... | Attempt {attempt+1} | To={to}")
+                logger.warning(
+                    f"⚠️ SMTP send failed, reconnecting... | Attempt {attempt+1} | To={to}"
+                )
                 self._disconnect()
                 self._connect()
                 attempt += 1
         # If still failed after retries
-        raise RuntimeError(f"❌ Failed to send email to {to} after {self._retries+1} attempts")
+        raise RuntimeError(
+            f"❌ Failed to send email to {to} after {self._retries+1} attempts"
+        )
 
     async def send_email(self, to: str, subject: str, body: str):
         """
@@ -84,4 +96,3 @@ class SMTPService:
         """
         async with self._lock:
             await asyncio.to_thread(self._send, to, subject, body)
-

@@ -8,7 +8,7 @@ logger = logging.getLogger("ASSISTANT")
 
 
 def log_chat_history_readable(
-    chat_history: List[Dict], prospect_id: str, session_id: str
+    chat_history: List[Dict], agency_prospect_id: str, session_id: str
 ):
     """
     Logs chat history in a sequential, human-readable format.
@@ -18,14 +18,14 @@ def log_chat_history_readable(
     if not chat_history:
         logger.info(
             "📜 Chat History is empty | 👤 Prospect=%s | 🧩 Session=%s",
-            prospect_id,
+            agency_prospect_id,
             session_id,
         )
         return
 
     logger.info(
         "📜 Chat History (Readable Version) | 👤 Prospect=%s | 🧩 Session=%s",
-        prospect_id,
+        agency_prospect_id,
         session_id,
     )
 
@@ -128,6 +128,7 @@ async def regenerate_and_send(
     prospect_email,
     sender,
     intent_guard_data,
+    agency_name,
     extra_context=None,
 ):
     updated_history, _ = await assistant.session.chat_container(text="", retrieve=True)
@@ -139,6 +140,7 @@ async def regenerate_and_send(
     final_ai_result = generate_ai_response(
         chat_container=updated_history_clean,
         intent_guard_data=intent_guard_data,
+        agency_name=agency_name,
     )
 
     final_public = final_ai_result.get("public_message", "")

@@ -2,7 +2,14 @@ import asyncio
 import logging
 from typing import Optional, List
 
-from core import db_insert, db_update, db_select, db_rpc
+from core import (
+    db_insert,
+    db_update,
+    db_select,
+    db_rpc,
+    RedisStreamHandler,
+    emails_broker,
+)
 
 logger = logging.getLogger("AGENCY_SERVICE")
 
@@ -10,20 +17,20 @@ logger = logging.getLogger("AGENCY_SERVICE")
 # =========================================================
 # 🔐 VAULT HELPERS
 # =========================================================
-
-
 async def store_agency_password(agency_id: str, app_password: str) -> Optional[str]:
     """
-    Store agency password in Vault and update agency.vault_secret_id.
+    Store agency password in Vault using the PUBLIC wrapper function.
     """
     try:
         logger.info(f"🔐 Creating Vault secret for agency={agency_id}")
 
         secret_id = await db_rpc(
-            "vault.create_secret",
+            "create_vault_secret",
             {
-                "secret": app_password,
-                "name": f"agency_password_{agency_id}",
+                "p_secret": app_password,
+                "p_name": f"agency_password_{agency_id}",
+                "p_description": f"Password for agency {agency_id}",
+                "p_key_id": None,  # Using default key
             },
         )
 
@@ -31,34 +38,43 @@ async def store_agency_password(agency_id: str, app_password: str) -> Optional[s
             logger.error("❌ Vault secret creation returned empty result")
             return None
 
+        # Handle list vs string response from rpc
+        actual_id = secret_id[0] if isinstance(secret_id, list) else secret_id
+
         try:
             logger.info(f"🔗 Linking Vault secret to agency={agency_id}")
             update_result = await db_update(
                 table="agencies",
-                updates={"vault_secret_id": str(secret_id)},
+                updates={"vault_secret_id": str(actual_id)},
                 filters={"id": agency_id},
             )
         except Exception as e:
             logger.exception(f"💥 Failed to update agency with vault_secret_id: {e}")
             return None
 
-        if update_result is None:
-            logger.error("❌ Failed linking vault_secret_id to agency")
-            return None
-
-        logger.info(f"✅ Vault secret linked → agency={agency_id}")
-        return str(secret_id)
+        return str(actual_id)
 
     except Exception as e:
         logger.exception(f"💥 store_agency_password failed: {e}")
         return None
 
 
-async def get_agency_password(agency: dict) -> Optional[str]:
+async def get_agency_password(key: dict | str) -> Optional[str]:
     """
-    Retrieve decrypted password from Vault.
+    Retrieve decrypted password using the PUBLIC wrapper function.
     """
     try:
+        if isinstance(key, str):
+            # If key is a string, assume it's an agency_id
+            agency = await get_agency_by_id(key)
+        else:
+            # If key is a dict, assume it's the agency record
+            agency = key
+
+        if not agency:
+            logger.warning("⚠️ Could not retrieve agency details")
+            return None
+
         secret_id = agency.get("vault_secret_id")
 
         if not secret_id:
@@ -68,14 +84,15 @@ async def get_agency_password(agency: dict) -> Optional[str]:
         logger.info(f"🔓 Fetching Vault secret for agency={agency.get('id')}")
 
         result = await db_rpc(
-            "vault.decrypted_secrets",
-            {"id": secret_id},
+            "get_vault_secret",
+            {"p_secret_id": secret_id},
         )
 
         if not result or not isinstance(result, list):
             logger.error("❌ Vault returned invalid response")
             return None
 
+        # result is a list of rows: [{'decrypted_secret': '...'}]
         password = result[0].get("decrypted_secret")
 
         if not password:
@@ -83,6 +100,7 @@ async def get_agency_password(agency: dict) -> Optional[str]:
             return None
 
         logger.info(f"✅ Password retrieved for agency={agency.get('id')}")
+
         return password
 
     except Exception as e:
@@ -312,11 +330,36 @@ async def update_agency_package(
 
 
 # =========================================================
+# 🚀 REDIS STREAM FOR AGENCY EMAILS
+# =========================================================
+def get_or_create_agency_email_stream(agency_id: str) -> Optional[RedisStreamHandler]:
+    """
+    Ensure the Redis stream and consumer group exist for the given agency and stream name.
+    """
+
+    try:
+        stream_key = f"agency:{agency_id}:email_events"
+        group_name = f"email_events_group"
+
+        consumer = RedisStreamHandler(
+            redis_broker=emails_broker,
+            stream_key=stream_key,
+            group_name=group_name,
+        )
+        logger.info(
+            f"✅ Redis stream and group ensured for {stream_key} with group {group_name}"
+        )
+        return consumer
+
+    except Exception as e:
+        logger.exception(f"💥 get_or_create_redis_stream failed: {e}")
+        return None
+
+
+# =========================================================
 # 🧪 CLI: SEED DUMMY DATA
 # =========================================================
-
-
-async def seed_dummy_agencies():
+async def seed_agencies():
     """
     Insert dummy agencies for testing.
     """
@@ -326,21 +369,21 @@ async def seed_dummy_agencies():
         await create_agency(
             name="Alpha Travel",
             issued_email="ahk3155263@gmail.com",
-            agent_email="ahk3155264@gmail.com",
+            agent_email="ahk3155262@gmail.com",
             app_password="fhcgozeenmbpnjbc",
         )
 
         await create_agency(
             name="Beta Voyages",
-            issued_email="ahk3155262@gmail.com",
-            agent_email="ahk3155265@gmail.com",
-            app_password="lgebwclxolkuscjc",
+            issued_email="ahk3155264@gmail.com",
+            agent_email="ahk3155263@gmail.com",
+            app_password="pkvciqwfbkxnsghq",
         )
 
         logger.info("✅ Dummy agencies seeded successfully!")
 
     except Exception as e:
-        logger.exception(f"💥 seed_dummy_agencies failed: {e}")
+        logger.exception(f"💥 seed_agencies failed: {e}")
 
 
 # =========================================================
@@ -349,4 +392,4 @@ async def seed_dummy_agencies():
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(seed_dummy_agencies())
+    asyncio.run(seed_agencies())
