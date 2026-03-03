@@ -219,6 +219,7 @@ class EmailService:
                 case_agent = CaseAgent(
                     agent_email=sender_email,
                     msg=message,
+                    issued_email=issued_email,
                     subject=subject,
                 )
                 await case_agent.final_message()

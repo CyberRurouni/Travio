@@ -1,7 +1,7 @@
 import hashlib
 import logging
 from unittest import result
-from core import db_select
+from core import db_select, get_agency_password
 
 logger = logging.getLogger("CASE_AGENT")
 
@@ -14,15 +14,27 @@ async def fetch_agent_agency(agent_email: str):
 
     result = await db_select(
         table="agencies",
-        fields=["id"],
+        fields="id,name",
         filters=filters,
         limit=1,
     )
 
     if result and len(result) > 0:
         agency_id = result[0].get("id")
-        if agency_id:
-            return str(agency_id)
+        agency_name = result[0].get("name")
+        app_password = await get_agency_password(agency_id)
+        payload = {
+            "agency_id": str(agency_id),
+            "agency_name": agency_name,
+            "app_password": app_password,
+        }
+        logger.info(
+            "✅ Found agency for agent_email=%s | Agency ID=%s | Agency Name=%s",
+            agent_email,
+            agency_id,
+            agency_name,
+        )
+        return payload
 
     logger.warning("❌ No agency found for agent_email=%s", agent_email)
     return None
@@ -37,7 +49,7 @@ async def fetch_prospect_id(identifier_hash: str, agency_id: str):
 
     global_prospects = await db_select(
         table="contact_methods",
-        fields=["prospect_id"],
+        fields="prospect_id",
         filters=filters,
         limit=1,
     )

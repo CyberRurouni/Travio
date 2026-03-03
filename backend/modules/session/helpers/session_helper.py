@@ -284,15 +284,17 @@ class SessionHelper:
 
     # -------------------- End Session --------------------
     @staticmethod
-    async def end_session(prospect_id: str, session_id: str | UUID = None):
+    async def end_session(agency_prospect_id: str, session_id: str | UUID = None):
         # Clear Redis cache
-        cache_key = SessionHelper._session_cache_key(prospect_id)
-        first_impression_key = SessionHelper._first_impression_cache_key(prospect_id)
+        cache_key = SessionHelper._session_cache_key(agency_prospect_id)
+        first_impression_key = SessionHelper._first_impression_cache_key(
+            agency_prospect_id
+        )
         safe_redis_operation(session_broker.delete, cache_key)
         safe_redis_operation(session_broker.delete, first_impression_key)
         logger.info(
             "🧹 Cleared session cache in Redis | Prospect ID=%s | Session ID=%s",
-            prospect_id,
+            agency_prospect_id,
             session_id,
         )
 
@@ -306,7 +308,7 @@ class SessionHelper:
         # Log the session end
         logger.info(
             "🛑 Session ended | Prospect ID=%s | Session ID=%s",
-            prospect_id,
+            agency_prospect_id,
             session_id,
         )
 

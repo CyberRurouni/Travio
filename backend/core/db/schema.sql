@@ -5,6 +5,7 @@
 CREATE EXTENSION IF NOT EXISTS "pgcrypto";
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS supabase_vault;
+create extension if not exists pg_cron;
 
 
 /* =========================================================
@@ -566,9 +567,10 @@ LANGUAGE plpgsql
 AS $$
 BEGIN
     UPDATE sessions
-    SET ended_at = now()
+    SET ended_at = now(),
+        is_ended = true          -- keep in sync with your end_session() func
     WHERE ended_at IS NULL
-      AND last_activity_at < now() - interval '14 days';
+      AND last_activity_at < now() - interval '7 days';
 END;
 $$;
 
@@ -707,6 +709,26 @@ AS $$
     FROM vault.decrypted_secrets
     WHERE id = p_secret_id;
 $$;
+
+
+-- ========================================================================
+--  CRON JOBS
+-- ========================================================================
+
+-- Schedule prune_stale_presence to run daily at 2am
+select cron.schedule(
+  'prune-stale-presence',
+  '0 2 * * *',
+  $$ select prune_stale_presence(); $$
+);
+
+-- Schedule end_stale_sessions to run daily at 3am
+select cron.schedule(
+  'end-stale-sessions',
+  '0 3 * * *',
+  $$ select end_stale_sessions(); $$
+);
+
 
 -- ========================================================================
 --  REALTIME CONFIGURATION

@@ -5,13 +5,14 @@ from core import supabase
 
 logger = logging.getLogger("DB_MAIN_CRUD")
 
+
 async def db_select(
     table: str,
     filters: dict | None = None,
     or_filters: list[tuple[str, str, Any]] | None = None,
     exclude_filters: dict | None = None,
     or_excluded_filters: list[tuple[str, str, Any]] | None = None,
-    search_filters: dict | None = None,  
+    search_filters: dict | None = None,
     date_range: dict | None = None,
     limit: int | None = None,
     offset: int | None = None,
@@ -36,7 +37,7 @@ async def db_select(
                     query = query.in_(field, list(value))
                 else:
                     if value is None:
-                        query = query.is_(field, None) # IS NULL
+                        query = query.is_(field, None)  # IS NULL
                     else:
                         query = query.eq(field, value)
 
@@ -133,7 +134,9 @@ async def db_select(
         # ------------------------------
         if include_next_cursor and data and cursor_field:
             last_item = data[-1]
-            last_cursor_value = last_item.get(cursor_field) if isinstance(last_item, dict) else None
+            last_cursor_value = (
+                last_item.get(cursor_field) if isinstance(last_item, dict) else None
+            )
             return {"data": data, "next_cursor": last_cursor_value}
 
         return data
@@ -141,6 +144,7 @@ async def db_select(
     except Exception as e:
         logger.error(f"Error selecting from '{table}': {e}", exc_info=True)
         return {"data": [], "next_cursor": None} if include_next_cursor else []
+
 
 async def db_upsert(
     table: str,
@@ -456,4 +460,3 @@ async def db_rpc(
     except Exception as e:
         logger.exception(f"💥 RPC {function_name} failed: {e}")
         return {}
-

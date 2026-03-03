@@ -28,12 +28,15 @@ class CaseAgent:
     5. Inform AI assistant that agent has sent final message.
     """
 
-    def __init__(self, agent_email: str, msg: str, subject: str = "Not Provided"):
+    def __init__(self, issued_email: str, agent_email: str, msg: str, subject: str = "Not Provided"):
+        self.issued_email = issued_email
         self.agent_email = agent_email
         self.message = msg
         self.subject = subject
 
         self.agency_id = None
+        self.agency_name = None
+        self.app_password = None
         self.prospect_email = self._extract_prospect_email()
         self.agency_prospect_id = None
         self.session_id = None
@@ -46,23 +49,33 @@ class CaseAgent:
     # ---------------------------------------------------------------------
 
     @staticmethod
-    async def resolve_agency_id(agent_email: str):
+    async def resolve_agency(agent_email: str):
         """
         Fetch agency ID associated with the agent email.
         """
         logger.info("Resolving agency | Agent=%s", agent_email)
 
-        agency_id = await fetch_agent_agency(agent_email)
+        agency = await fetch_agent_agency(agent_email)
 
-        if not agency_id:
-            logger.warning("❌ No agency found | Agent=%s", agent_email)
-        else:
-            logger.info("✅ Agency resolved | AgencyID=%s", agency_id)
+        agency_id = agency.get("agency_id") if agency else None
+        agency_name = agency.get("agency_name") if agency else None
+        app_password = agency.get("app_password") if agency else None
 
-        return agency_id
+        if agency_id and agency_name and app_password:
+            logger.info(
+                "✅ Agency resolved | Agent=%s | AgencyID=%s | AgencyName=%s",
+                agent_email,
+                agency_id,
+                agency_name,
+            )
+            return agency_id, agency_name, app_password
+
+        return None, None, None
 
     async def update_agency_id(self):
-        self.agency_id = await self.resolve_agency_id(self.agent_email)
+        self.agency_id, self.agency_name, self.app_password = await self.resolve_agency(
+            self.agent_email
+        )
 
     # ---------------------------------------------------------------------
     # Prospect Resolution
@@ -79,7 +92,9 @@ class CaseAgent:
         found_emails = re.findall(email_pattern, self.message)
 
         prospect_emails = [
-            email for email in found_emails if not is_internal_agent_email(email)
+            email
+            for email in found_emails
+            if not is_internal_agent_email(email, self.agent_email)
         ]
 
         if not prospect_emails:
@@ -126,7 +141,7 @@ class CaseAgent:
         4. Log agent message
         5. Notify assistant (final message)
         """
-        from core import InstanceRegistry, Session, Assistant
+        from core import InstanceRegistry, Session, Assistant, get_agency_password
 
         logger.info("Starting final_message flow")
 
@@ -189,14 +204,14 @@ class CaseAgent:
         logger.info("✅ Agent & System message logged in chat container")
 
         # -------------------- Resolve Assistant --------------------
-
         assistant_registry = InstanceRegistry(ttl=timedelta(hours=1))
-
         assistant = await assistant_registry.get_or_create(
             key=f"{self.agency_id}:{self.agency_prospect_id}:{self.session_id}",
             factory=Assistant,
             agency_id=str(self.agency_id),
-            prospect_id=str(self.agency_prospect_id),
+            agency_prospect_id=str(self.agency_prospect_id),
+            issued_email=self.issued_email,
+            app_password=self.app_password,
             session=self.session,
             factory_type="sync",
         )
@@ -214,6 +229,7 @@ class CaseAgent:
             first_impression=session._cached_first_impression or {},
             msg=self.message,
             agent_email=self.agent_email,
+            agency_name=self.agency_name,
             agent_message=True,
             final_message=True,
         )

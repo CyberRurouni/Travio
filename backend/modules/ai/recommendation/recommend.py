@@ -3,7 +3,8 @@ from .components.request import formulate_request
 from .utils import (
     format_packages,
     insert_recommendation_event,
-    insert_recommendation_item,
+    insert_packages_into_event,
+    get_existing_recommendation_event,
 )
 from core import (
     fetch_table_schema,
@@ -306,7 +307,9 @@ async def smart_package_search(
         except Exception as e:
             logger.warning("⚠️ Failed caching new package IDs: %s", e)
 
-        logger.info("🧠 Smart package search completed for prospect %s", agency_prospect_id)
+        logger.info(
+            "🧠 Smart package search completed for prospect %s", agency_prospect_id
+        )
 
     except Exception as e:
         logger.critical("❌ Unexpected error in smart_package_search: %s", e)
@@ -317,12 +320,23 @@ async def smart_package_search(
 async def db_scanning(
     user_note: str, session_id: str, agency_prospect_id: str, exclude_previous_ids: bool
 ):
+    """
+    Main function to scan database packages based on a user note, format results,
+    and optionally insert recommendation events and items into memory.
+    
+    Features:
+        - Avoids inserting duplicate recommendation events if exclude_previous_ids=True.
+        - Logs every major step and warning/error.
+    """
     response = {"results": [], "message": "⚠️ Scan failed."}
+
     try:
         logger.info("🔍 Starting DB scan | Prospect=%s", agency_prospect_id)
         logger.info("📝 User note:\n%s", user_note)
 
-        # Formulate structured request
+        # ------------------------------
+        # Step 1: Formulate structured search request
+        # ------------------------------
         try:
             search_request = formulate_request(user_note)
             search_request["exclude_previous_ids"] = exclude_previous_ids
@@ -331,7 +345,9 @@ async def db_scanning(
             logger.warning("⚠️ Failed to formulate request: %s", e)
             search_request = {}
 
-        # Fetch raw results
+        # ------------------------------
+        # Step 2: Fetch raw search results
+        # ------------------------------
         try:
             raw_search_results = await smart_package_search(
                 user_request=search_request,
@@ -342,7 +358,9 @@ async def db_scanning(
             logger.error("❌ Smart package search failed: %s", e)
             raw_search_results = []
 
-        # Format results
+        # ------------------------------
+        # Step 3: Format results for display and memory insertion
+        # ------------------------------
         try:
             formatted_packages = format_packages(raw_search_results)
             package_text_blocks = [entry["details"] for entry in formatted_packages]
@@ -353,39 +371,43 @@ async def db_scanning(
             logger.warning("⚠️ Failed formatting packages: %s", e)
             formatted_packages = []
 
-        # Insert recommendation events/items
+        # ------------------------------
+        # Step 4: Insert recommendation events/items
+        # ------------------------------
         try:
-            request_embedding = await generate_embeddings(user_note)
-            recommendation_event_id = await insert_recommendation_event(
-                session_id, request_embedding, user_note
-            )
+            # Check for existing recommendation event to avoid duplicates
+            last_event_id = None
+            if exclude_previous_ids:
+                last_event_id = await get_existing_recommendation_event(session_id, user_note)
 
-            if recommendation_event_id and formatted_packages:
-                logger.info("💾 Inserting recommendation items into memory...")
-                for idx, package in enumerate(formatted_packages):
-                    try:
-                        memory_embedding = await generate_embeddings(
-                            f"User Request: {user_note}\nPackage Details: {package}"
-                        )
-                        await insert_recommendation_item(
-                            session_id,
-                            recommendation_event_id,
-                            package["package_id"],
-                            raw_search_results[idx],
-                            memory_embedding,
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            "⚠️ Failed inserting package %s: %s",
-                            package.get("package_id"),
-                            e,
-                        )
+            # If a matching previous event exists, only insert items
+            if last_event_id and formatted_packages:
+                logger.info(
+                    "💾 Using existing recommendation event ID=%s for new packages", last_event_id
+                )
+                await insert_packages_into_event(
+                    session_id, last_event_id, user_note, formatted_packages, raw_search_results
+                )
 
-                logger.info("✅ Recommendation items saved successfully.")
+            # Otherwise, create a new recommendation event
+            else:
+                request_embedding = await generate_embeddings(user_note)
+                new_event_id = await insert_recommendation_event(session_id, request_embedding, user_note)
+
+                if new_event_id and formatted_packages:
+                    logger.info(
+                        "💾 Creating new recommendation event ID=%s and inserting packages", new_event_id
+                    )
+                    await insert_packages_into_event(
+                        session_id, new_event_id, user_note, formatted_packages, raw_search_results
+                    )
+
         except Exception as e:
             logger.warning("⚠️ Failed saving recommendation event/items: %s", e)
 
-        # Summary message
+        # ------------------------------
+        # Step 5: Generate summary message
+        # ------------------------------
         try:
             num_packages = len(raw_search_results)
             if num_packages == 0:
@@ -395,9 +417,7 @@ async def db_scanning(
                 response["message"] = "✅ 1 package found matching the criteria."
                 logger.info(response["message"])
             else:
-                response["message"] = (
-                    f"✅ {num_packages} packages found matching the criteria."
-                )
+                response["message"] = f"✅ {num_packages} packages found matching the criteria."
                 logger.info(response["message"])
 
             response["results"] = formatted_packages
@@ -410,3 +430,4 @@ async def db_scanning(
         logger.critical("❌ Unexpected error in db_scanning: %s", e)
 
     return response
+
