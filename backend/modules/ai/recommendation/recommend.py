@@ -7,10 +7,10 @@ from .utils import (
     get_existing_recommendation_event,
 )
 from core import (
+    call_openai,
     fetch_table_schema,
     run_sql_query,
     generate_embeddings,
-    call_openai_safe,
     safe_redis_operation,
     recommendation_broker,
 )
@@ -181,10 +181,11 @@ NOW GENERATE SQL
 - Do not break the examples' pattern
 """
 
-    resp = call_openai_safe(
+    resp = call_openai.blocking(
         messages=[{"role": "user", "content": prompt}],
-        response_format="json",
-        fallback_response={"sql": ""},
+        max_tokens=800,
+        increment=200,
+        fallback={"sql": ""},
     )
 
     sql = resp.get("sql", "").strip()

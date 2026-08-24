@@ -1,6 +1,6 @@
 import json
 import logging
-from core import call_openai_safe
+from core import call_openai
 
 logger = logging.getLogger("ESSENCE EXTRACTOR")
 
@@ -96,15 +96,14 @@ No explanation.
 """
 
     try:
-        result = call_openai_safe(
+        result = call_openai.stream(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": json.dumps(chat_container, indent=2)},
             ],
             temperature=0,
             max_tokens=1200,
-            response_format="json",
-            fallback_response=chat_container,  # ✅ fallback
+            fallback=chat_container,  # ✅ fallback
         )
 
         # If model returned string JSON, parse it

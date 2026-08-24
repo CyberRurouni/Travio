@@ -56,7 +56,7 @@ class Assistant:
         if first_impression:
             intent_guard_data = {"first_impression": first_impression}
 
-        if not is_prospect_first_msg and not agent_message:
+        if not agent_message:
             analysis = TravelIntentGuard.analyze_conversation(
                 subject="",
                 latest_msg=msg,
@@ -65,7 +65,17 @@ class Assistant:
             if analysis:
                 intent_guard_data.update(analysis)
 
-        # -------------------- Initial AI Response --------------------
+        # Ensure conversation_layer is always surfaced at the top level
+        # so response.py can read it without nested lookups.
+        # Priority: top-level > intent sub-object > first_impression > default GENERAL
+        if "conversation_layer" not in intent_guard_data:
+            nested = intent_guard_data.get("intent", {}).get("conversation_layer")
+            fi_layer = intent_guard_data.get("first_impression", {}).get("conversation_layer")
+            intent_guard_data["conversation_layer"] = nested or fi_layer or "GENERAL"
+        
+        logger.info(f"🎯 User Intent Analysis: {intent_guard_data}")
+
+        # -------------------- AI Response --------------------
         ai_result = generate_ai_response(
             chat_container=chat_history,
             intent_guard_data=intent_guard_data if intent_guard_data else None,
@@ -95,7 +105,7 @@ class Assistant:
             agent_email=agent_email,
             agency_name=agency_name,
             sender=sender,
-            intent_guard_data=intent_guard_data,
+            intent_guard_data=intent_guard_data, 
             agency_prospect_id=self.agency_prospect_id,
             session_id=self.session.session_id,
         )

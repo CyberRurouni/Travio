@@ -1,5 +1,5 @@
 from typing import Dict, Any
-from core import call_openai_safe
+from core import call_openai
 
 
 def formulate_request(body: str) -> Dict[str, Any]:
@@ -166,11 +166,11 @@ EMAIL TO ANALYZE
 Return ONLY the JSON object.
 """
 
-    result = call_openai_safe(
+    result = call_openai.blocking(
         messages=[{"role": "user", "content": prompt}],
         max_tokens=500,
-        response_format="json",
-        fallback_response={
+        increment=150,
+        fallback={
             "main_query": "",
             "constraints": {
                 "category": {"include": [], "exclude": []},

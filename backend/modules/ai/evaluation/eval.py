@@ -16,10 +16,17 @@ MAX_UNIDENTIFIED_ATTEMPTS = 3
 
 
 async def classify_sender(
-    sender_id: str, subject: str, message: str, issued_email: str, app_password: str
+    agency_id: str,
+    sender_id: str,
+    subject: str,
+    message: str,
+    issued_email: str,
+    app_password: str,
 ) -> dict:
     """
     Full stateful sender classification with re-evaluation logic.
+    Classification caches are scoped per-agency so a sender is only ever
+    remembered as prospect/trivia in the context of one agency.
     """
     from core import (
         is_registered_prospect_by_email,
@@ -38,12 +45,12 @@ async def classify_sender(
     subject = subject or ""
     message = message or ""
 
-    prospect_key = f"prospect:{sender_id}"
-    trivia_key = f"trivia:{sender_id}"
-    needs_reeval_key = f"needs_reeval:{sender_id}"
-    attempts_key = f"attempts:{sender_id}"
+    prospect_key = f"prospect:{agency_id}:{sender_id}"
+    trivia_key = f"trivia:{agency_id}:{sender_id}"
+    needs_reeval_key = f"needs_reeval:{agency_id}:{sender_id}"
+    attempts_key = f"attempts:{agency_id}:{sender_id}"
     context_key = (
-        f"context:{sender_id}"  # Stores conversation history for reevaluate_email
+        f"context:{agency_id}:{sender_id}"  # Stores conversation history for reevaluate_email
     )
 
     try:

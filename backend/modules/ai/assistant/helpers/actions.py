@@ -21,7 +21,7 @@ async def handle_action(
     agency_prospect_id,
     session_id,
 ):
-    from core import db_scanning
+    from core import db_scanning, fetch_last_email_subject
 
     public_message = ai_result.get("public_message", "")
     internal_note = ai_result.get("internal_note", "")
@@ -47,6 +47,8 @@ async def handle_action(
                         internal_note=internal_note,
                         sender=sender,
                         subject=subject,
+                        agency_prospect_id = agency_prospect_id,
+                        session_id = session_id,
                         log_prefix="💬 General response |",
                     )
 
@@ -166,6 +168,7 @@ results: {json.dumps(scanning, indent=2)}""",
                             prospect_email=prospect_email,
                             sender=sender,
                             intent_guard_data=intent_guard_data,
+                            subject=subject,
                             agency_name=agency_name,
                         )
                         logger.info("🔄 Regeneration after scan triggered.")
@@ -248,6 +251,7 @@ results: Handoff email sent to agent""",
                         prospect_email=prospect_email,
                         sender=sender,
                         intent_guard_data=intent_guard_data,
+                        subject=subject,
                         agency_name=agency_name,
                     )
 
@@ -327,6 +331,7 @@ results: {{
                             smtp_service=smtp_service,
                             prospect_email=prospect_email,
                             sender=sender,
+                            subject=subject,
                             intent_guard_data=intent_guard_data,
                             agency_name=agency_name,
                         )
@@ -410,6 +415,7 @@ results: null""",
                             smtp_service=smtp_service,
                             prospect_email=prospect_email,
                             sender=sender,
+                            subject=subject,
                             intent_guard_data=intent_guard_data,
                             agency_name=agency_name,
                         )
@@ -440,12 +446,26 @@ results: null""",
                         public_message=public_message,
                         sender=sender,
                         subject=subject,
+                        agency_prospect_id = agency_prospect_id,
+                        session_id = session_id,
                         log_prefix="🎯 Final message |",
                     )
 
                     await SessionHelper.end_session(
                         agency_prospect_id=agency_prospect_id,
                         session_id=session_id,
+                    )
+
+                    # Evict the shared in-memory registries so a follow-up
+                    # email after the session ends starts a fresh session
+                    # instead of resuming the ended one within the TTL window.
+                    from core import session_registry, assistant_registry
+
+                    await session_registry.evict(
+                        f"{assistant.agency_id}:{agency_prospect_id}"
+                    )
+                    await assistant_registry.evict(
+                        f"{assistant.agency_id}:{agency_prospect_id}:{session_id}"
                     )
 
                 except Exception as e:
@@ -456,7 +476,7 @@ results: null""",
                 logger.warning("⚠️ Unknown action type: %s", action_type)
 
     except Exception as e:
-        logger.critical("❌ Unexpected error in handle_action: %s", e)
+        logger.critical("❌ Unexpected error in handle_action: %s", e) 
 
     finally:
         logger.info(

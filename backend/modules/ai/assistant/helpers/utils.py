@@ -43,14 +43,15 @@ def log_chat_history_readable(
 
 
 async def handle_outbound_message(
-    *,
     assistant,
     smtp_service,
     logger,
+    agency_prospect_id,
+    session_id,
     prospect_email: str,
+    subject: str,
     public_message: str | None = None,
     internal_note: str | None = None,
-    subject: str,
     log_prefix: str = "",
     sender: str = "Travio",
     state_action_type: str | None = None,
@@ -60,6 +61,7 @@ async def handle_outbound_message(
     Generic outbound handler for public responses, final messages,
     and internal notes.
     """
+    from core import session_broker, safe_redis_operation
 
     try:
         # -----------------------------
@@ -90,6 +92,10 @@ async def handle_outbound_message(
                     "Re: Your Inquiry"
                     if email_subject in DEFAULT_SUBJECTS
                     else f"Re: {subject}"
+                )
+
+                logger.info(
+                    f"📝 Initial Subject: {email_subject}, Final Subject: {final_subject}"
                 )
 
                 await smtp_service.send_email(
@@ -129,6 +135,7 @@ async def regenerate_and_send(
     sender,
     intent_guard_data,
     agency_name,
+    subject,
     extra_context=None,
 ):
     updated_history, _ = await assistant.session.chat_container(text="", retrieve=True)
@@ -146,10 +153,16 @@ async def regenerate_and_send(
     final_public = final_ai_result.get("public_message", "")
     final_internal = final_ai_result.get("internal_note", "")
 
+    DEFAULT_SUBJECTS = {"not provided", "no subject", ""}
+    email_subject = subject.strip().lower() if subject else ""
+    final_subject = (
+        "Re: Your Inquiry" if email_subject in DEFAULT_SUBJECTS else f"Re: {subject}"
+    )
+
     if final_public:
         await smtp_service.send_email(
             to=prospect_email,
-            subject="Re: Your inquiry",
+            subject=final_subject,
             body=final_public,
         )
         await assistant.session.chat_container(text=final_public, sender=sender)

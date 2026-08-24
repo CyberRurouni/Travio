@@ -4,6 +4,12 @@ import logging
 
 from datetime import timedelta
 
+from core import (
+    prospect_registry,
+    session_registry,
+    assistant_registry,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s.%(msecs)03d | %(levelname)s | %(name)s: %(message)s",
@@ -160,7 +166,9 @@ class EmailService:
     # ─────────────────────────────────────────────
     # Core email processing logic
     # ─────────────────────────────────────────────
-    async def process_email(self, email_event: tuple, agency_id: str, app_password: str):
+    async def process_email(
+        self, email_event: tuple, agency_id: str, app_password: str
+    ):
         """
         Process a single email for a specific agency.
         All agency context comes from the Redis payload — no env vars.
@@ -169,11 +177,13 @@ class EmailService:
             get_or_create_agency_email_stream,
             classify_sender,
             is_internal_agent_email,
+            safe_redis_operation,
+            fetch_last_email_subject,
             HandleProspect,
-            InstanceRegistry,
             Session,
             Assistant,
             CaseAgent,
+            session_broker,
         )
         from .utils import extract_clean_email_body
 
@@ -227,6 +237,7 @@ class EmailService:
 
             # ─── Classify sender intent ───────────────────────────
             classification = await classify_sender(
+                agency_id=agency_id,
                 sender_id=sender_email,
                 subject=subject,
                 message=message,
@@ -239,7 +250,6 @@ class EmailService:
                 return
 
             # ─── Prospect lifecycle ───────────────────────────────
-            prospect_registry = InstanceRegistry(ttl=timedelta(hours=1))
             prospect: HandleProspect = await prospect_registry.get_or_create(
                 key=f"{agency_id}:{sender_email}",  # scoped to agency
                 factory=HandleProspect.create,
@@ -249,7 +259,9 @@ class EmailService:
                 factory_type="async",
             )
 
-            agency_db_id, agency_prospect_id = await prospect.register(channel_type="email")
+            agency_db_id, agency_prospect_id = await prospect.register(
+                channel_type="email"
+            )
 
             if not agency_db_id or not agency_prospect_id:
                 logger.error(f"[{agency_id}] ❌ Prospect registration failed")
@@ -258,7 +270,6 @@ class EmailService:
             await prospect.mark_presence(channel_type="email")
 
             # ─── Session lifecycle ────────────────────────────────
-            session_registry = InstanceRegistry(ttl=timedelta(hours=1))
             session = await session_registry.get_or_create(
                 key=f"{agency_db_id}:{agency_prospect_id}",
                 factory=Session.initiate_session,
@@ -278,8 +289,24 @@ class EmailService:
             # ─── Persist inbound message ─────────────────────────
             await session.chat_container(sender="prospect", text=message)
 
+            # ─── Fetch & Store Last Subject ─────────────────────────
+            last_subject_key = f"{agency_prospect_id}:{session.session_id}:last_subject"
+
+            DEFAULT_SUBJECTS = {"not provided", "no subject", ""}
+            email_subject = subject.strip().lower() if subject else ""
+            if email_subject in DEFAULT_SUBJECTS:
+                subject = fetch_last_email_subject(
+                    agency_prospect_id=agency_db_id, session_id=session.session_id
+                )
+            else:
+                safe_redis_operation(
+                    session_broker.set,
+                    last_subject_key,
+                    subject,
+                    ex=timedelta(days=7),
+                )
+
             # ─── Assistant lifecycle ──────────────────────────────
-            assistant_registry = InstanceRegistry(ttl=timedelta(hours=1))
             assistant = await assistant_registry.get_or_create(
                 key=f"{agency_db_id}:{agency_prospect_id}:{session.session_id}",
                 factory=Assistant,

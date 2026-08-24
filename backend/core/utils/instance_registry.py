@@ -68,3 +68,27 @@ class InstanceRegistry:
                         del self._instances[key]
                 raise
 
+    async def evict(self, key: str):
+        """
+        Remove a cached instance for the given key.
+
+        Used to invalidate in-memory instances whose underlying state has
+        changed (e.g. a session that has just been ended) so the next call
+        rebuilds them instead of reusing stale ones.
+        """
+        async with self._lock:
+            self._instances.pop(key, None)
+
+
+# ============================================================================
+# 🔹 SHARED REGISTRY SINGLETONS
+# ============================================================================
+# Module-level registries shared across request handlers so instances are
+# reused within their TTL window instead of being rebuilt per email/message.
+# Prospects/sessions/assistants are short-lived per email burst (1h),
+# SMTP connections are worth keeping longer (6h).
+prospect_registry = InstanceRegistry(ttl=timedelta(hours=1))
+session_registry = InstanceRegistry(ttl=timedelta(hours=1))
+assistant_registry = InstanceRegistry(ttl=timedelta(hours=1))
+smtp_registry = InstanceRegistry(ttl=timedelta(hours=6))
+

@@ -40,6 +40,14 @@ client = OpenAI(
 )
 
 # ----------------------------
+# AI client (streaming + non-streaming)
+# Single shared instance used throughout the application.
+# ----------------------------
+from core.utils.ai_utils.client import AIClient  # noqa: E402  (module-level deps only)
+
+call_openai = AIClient()
+
+# ----------------------------
 # Supabase clients
 # ----------------------------
 SB_URL = os.getenv("SB_URL") or ""

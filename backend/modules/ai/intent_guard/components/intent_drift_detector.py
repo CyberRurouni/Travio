@@ -1,6 +1,6 @@
 import json
 from typing import Dict, Any
-from core import call_openai_safe
+from core import call_openai
 
 def detect_intent_drift(body: str, previous_intent: str) -> Dict[str, Any]:
     prompt = f"""
@@ -24,11 +24,11 @@ Email body:
 \"\"\"{body}\"\"\"
 """
 
-    result = call_openai_safe(
+    result = call_openai.blocking(
         messages=[{"role": "user", "content": prompt}],
         max_tokens=350,
-        response_format="json",
-        fallback_response={
+        increment=100,
+        fallback={
             "intent_changed": False,
             "new_intent": None,
             "confidence": 0.0,

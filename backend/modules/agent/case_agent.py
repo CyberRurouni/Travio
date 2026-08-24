@@ -4,6 +4,7 @@ import logging
 from datetime import timedelta
 
 from .crud import fetch_agent_agency, fetch_prospect_id
+from core import session_registry, assistant_registry
 
 
 logger = logging.getLogger("CASE_AGENT")
@@ -141,7 +142,7 @@ class CaseAgent:
         4. Log agent message
         5. Notify assistant (final message)
         """
-        from core import InstanceRegistry, Session, Assistant, get_agency_password
+        from core import Session, Assistant, get_agency_password
 
         logger.info("Starting final_message flow")
 
@@ -159,8 +160,6 @@ class CaseAgent:
             return
 
         # -------------------- Resolve or Create Session --------------------
-
-        session_registry = InstanceRegistry(ttl=timedelta(hours=1))
 
         session = await session_registry.get_or_create(
             key=f"{self.agency_id}:{self.agency_prospect_id}",
@@ -204,7 +203,6 @@ class CaseAgent:
         logger.info("✅ Agent & System message logged in chat container")
 
         # -------------------- Resolve Assistant --------------------
-        assistant_registry = InstanceRegistry(ttl=timedelta(hours=1))
         assistant = await assistant_registry.get_or_create(
             key=f"{self.agency_id}:{self.agency_prospect_id}:{self.session_id}",
             factory=Assistant,

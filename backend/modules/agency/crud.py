@@ -208,7 +208,7 @@ async def create_agency_package(
     description: Optional[str] = None,
     price_amount: Optional[float] = None,
     price_currency: str = "USD",
-    pricing_model: Optional[str] = None,  # fixed | per_person | per_day | custom
+    pricing_model: Optional[str] = None,
     category: Optional[str] = None,
     destination: Optional[str] = None,
     duration_days: Optional[int] = None,
@@ -218,64 +218,60 @@ async def create_agency_package(
     is_custom: bool = False,
 ) -> Optional[dict]:
     """
-    📦 Create a new agency package with embedding generated immediately.
-    Returns the full package including embedding if successful.
+    Create agency package with normalized fields and embedding.
     """
-
     try:
-        from core import generate_package_embedding
+        from core import generate_package_embedding, normalize_text, normalize_list
 
-        logger.info(f"📦 Creating package '{name}' for agency={agency_id}")
+        logger.info(f"📦 Creating package → {name}")
 
-        # Basic validation
         if not agency_id:
             logger.error("❌ agency_id is required")
             return None
 
-        if not name:
+        if not name or not name.strip():
             logger.error("❌ package name is required")
             return None
-
-        package_data = {
-            "agency_id": agency_id,
-            "name": name,
-            "description": description,
-            "price_amount": price_amount,
-            "price_currency": price_currency,
-            "pricing_model": pricing_model,
-            "category": category,
-            "destination": destination,
-            "duration_days": duration_days,
-            "ideal_for": ideal_for,
-            "includes": includes,
-            "is_active": is_active,
-            "is_custom": is_custom,
-        }
-
-        # 1️⃣ Insert package
+        
         package = await db_insert(
             table="agency_packages",
-            data=package_data,
+            data={
+                "agency_id": agency_id,
+                "name": normalize_text(name, "title"),
+                "description": normalize_text(description),
+                "price_amount": price_amount,
+                "price_currency": normalize_text(price_currency, "upper"),
+                "pricing_model": normalize_text(pricing_model),
+                "category": normalize_text(category),
+                "destination": normalize_text(destination, "title"),
+                "duration_days": duration_days,
+                "ideal_for": normalize_list(ideal_for),
+                "includes": normalize_list(includes),
+                "is_active": is_active,
+                "is_custom": is_custom,
+            },
             return_mode="one",
         )
 
         if not package:
-            logger.error("❌ Failed to insert agency package")
+            logger.error("❌ Package insert failed")
             return None
 
-        # 2️⃣ Generate and store embedding
-        await generate_package_embedding(package)
+        package_id = package.get("id")
 
-        # 3️⃣ Fetch updated package with embedding
-        refreshed = await db_select(
-            table="agency_packages",
-            filters={"id": package["id"]},
-            limit=1,
-        )
+        if not package_id:
+            logger.error("❌ Inserted package missing ID")
+            return None
 
-        final_package = refreshed[0] if refreshed else package
-        logger.info(f"✅ Package created successfully → id={final_package.get('id')}")
-        return final_package
+        logger.info(f"✅ Package created → id={package_id}")
+
+        # Generate embedding
+        try:
+            await generate_package_embedding(package)
+        except Exception:
+            logger.warning(f"⚠️ Embedding generation failed → id={package_id}")
+
+        return package
 
     except Exception as e:
         logger.exception(f"💥 create_agency_package failed: {e}")

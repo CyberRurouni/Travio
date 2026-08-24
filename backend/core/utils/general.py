@@ -2,9 +2,9 @@ import logging
 import asyncio
 import hashlib
 from datetime import timedelta
-from typing import List
+from typing import List, Optional
 
-from realtime import Optional
+from core import smtp_registry
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("GENERAL_UTILS")
@@ -91,13 +91,95 @@ def hash_identifier(raw_identifier: str) -> str:
 # SMTP Service Instance Getter
 # =========================================
 async def get_smtp_service(issued_email, app_password):
-    from core import InstanceRegistry, SMTPService
+    from core import SMTPService
 
-    smtp_registry = InstanceRegistry(ttl=timedelta(hours=6))
     return await smtp_registry.get_or_create(
-        key="smtp_service",
+        key=f"smtp:{issued_email}",
         factory=SMTPService,
         issued_email=issued_email,
         app_password=app_password,
         factory_type="sync",
     )
+
+
+# =========================================
+# Normalization
+# =========================================
+def normalize_text(value: Optional[str], mode: str = "lower") -> Optional[str]:
+    """
+    Normalize a text value.
+
+    - Strips surrounding whitespace.
+    - Applies casing based on mode:
+        lower → lowercase
+        upper → uppercase
+        title → title case
+    - Returns None if input is empty or None.
+    """
+
+    if not value:
+        return None
+
+    value = value.strip()
+
+    if not value:
+        return None
+
+    if mode == "lower":
+        return value.lower()
+
+    if mode == "upper":
+        return value.upper()
+
+    if mode == "title":
+        return value.title()
+
+    return value
+
+
+def normalize_list(values: Optional[List[str]]) -> Optional[List[str]]:
+    """
+    Normalize a list of text values.
+
+    - Removes empty / None entries
+    - Strips whitespace
+    - Converts values to lowercase
+    - Deduplicates entries
+
+    Returns a cleaned list or None if no valid items remain.
+    """
+
+    if not values:
+        return None
+
+    cleaned = {v.strip().lower() for v in values if v and v.strip()}
+
+    return list(cleaned) if cleaned else None
+
+
+# =========================================
+# Last Subject
+# =========================================
+def fetch_last_email_subject(agency_prospect_id, session_id):
+    """
+    A general helper function, used to fetch last subject incase subject isn't provided
+    When is subject not provided?
+    When user replies or forward a message, there last subject is required to maintain the seq.
+    """
+
+    from core import session_broker, safe_redis_operation
+
+    last_subject_key = f"{agency_prospect_id}:{session_id}:last_subject"
+    last_subject = safe_redis_operation(session_broker.get, last_subject_key)
+    if last_subject:
+        # Update ttl
+        safe_redis_operation(
+            session_broker.set,
+            last_subject_key,
+            last_subject,
+            ex=timedelta(days=7),
+        )
+
+        return last_subject
+    
+    return "no subject"

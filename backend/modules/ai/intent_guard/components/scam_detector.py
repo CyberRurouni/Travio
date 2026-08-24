@@ -1,5 +1,5 @@
 from typing import Dict, Any
-from core import call_openai_safe
+from core import call_openai
 
 
 def detect_scam(body: str) -> Dict[str, Any]:
@@ -37,11 +37,11 @@ def detect_scam(body: str) -> Dict[str, Any]:
     Email body:
     \"\"\"{body}\"\"\"
     """
-    result = call_openai_safe(
+    result = call_openai.blocking(
         messages=[{"role": "user", "content": prompt}],
         max_tokens=300,
-        response_format="json",
-        fallback_response={
+        increment=100,
+        fallback={
             "is_scam": False,
             "risk_level": "low",
             "reasons": "fallback",

@@ -1,6 +1,6 @@
 import json
 from typing import Dict, Any
-from core import call_openai_safe
+from core import call_openai
 
 
 def first_impression(subject: str, body: str) -> Dict[str, Any]:
@@ -53,11 +53,11 @@ Body:
 \"\"\"{body}\"\"\"
 """
 
-    result = call_openai_safe(
+    result = call_openai.blocking(
         messages=[{"role": "user", "content": prompt}],
         max_tokens=450,
-        response_format="json",
-        fallback_response={
+        increment=100,
+        fallback={
             "intent": "unknown",
             "confidence": 0.0,
             "behavior": "unknown",

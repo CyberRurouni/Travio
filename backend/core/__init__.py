@@ -3,7 +3,7 @@
 # ---------
 
 # Config
-from genesis.config import client, supabase, async_supabase, get_async_supabase
+from genesis.config import client, call_openai, supabase, async_supabase, get_async_supabase
 from genesis.config import fetch_unread_emails_for_agency
 
 ### ==========
@@ -15,9 +15,14 @@ from .utils.redis_utils import emails_broker, prospects_broker, session_broker, 
 from .utils.redis_utils import emails_stream
 from .utils.redis_utils import RedisStreamHandler
 from .utils.redis_utils import safe_redis_operation
-from .utils.ai_utils import call_openai_safe
-from .utils.instance_registry import InstanceRegistry
-from .utils.general import generate_embeddings, generate_package_embedding, hash_identifier, get_smtp_service
+from .utils.instance_registry import (
+    InstanceRegistry,
+    prospect_registry,
+    session_registry,
+    assistant_registry,
+    smtp_registry,
+)
+from .utils.general import generate_embeddings, generate_package_embedding, hash_identifier, get_smtp_service, normalize_list, normalize_text, fetch_last_email_subject
 
 # ---------- Services ----------
 from .services.crud import fetch_table_schema, run_sql_query

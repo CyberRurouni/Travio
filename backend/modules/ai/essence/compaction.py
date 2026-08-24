@@ -1,6 +1,6 @@
 import json
 import logging
-from core import call_openai_safe
+from core import call_openai
 
 logger = logging.getLogger("ESSENCE EXTRACTOR")
 
@@ -92,7 +92,6 @@ logger = logging.getLogger("DIALOGUE COMPACTOR")
 MIN_REQUIRED_MESSAGES = 4
 MAX_RETRIES = 5
 BASE_MAX_TOKENS = 1200
-TOKEN_INCREMENT = 300
 
 
 def _is_structurally_valid(original: list[dict], compressed: list[dict]) -> bool:
@@ -134,25 +133,20 @@ def compact_dialogue_state(chat_history: list[dict]) -> tuple[list[dict], bool]:
         len(chat_history),
     )
 
-    system_prompt = """ 
-    (keep your existing deterministic compression prompt here unchanged)
-    """
-
     try:
         for attempt in range(MAX_RETRIES):
 
-            max_tokens = BASE_MAX_TOKENS + (attempt * TOKEN_INCREMENT)
-
-            result = call_openai_safe(
+            result = call_openai.stream(
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": json.dumps(chat_history)},
                 ],
                 temperature=0,
-                max_tokens=max_tokens,
+                max_tokens=BASE_MAX_TOKENS,
+                increment=300,
                 model="openai/gpt-4o-mini",
-                response_format="json",
-                fallback_response=chat_history,
+                max_continuations=5,
+                fallback=chat_history,
             )
 
             if isinstance(result, str):

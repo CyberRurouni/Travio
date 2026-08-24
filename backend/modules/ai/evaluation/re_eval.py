@@ -22,7 +22,7 @@ async def reevaluate_email(
     - Stores its own response into context for next round.
     - Returns resolution verdict + updated context.
     """
-    from core import call_openai_safe, get_smtp_service
+    from core import call_openai, get_smtp_service
 
     messages = [
         {"role": "system", "content": REEVALUATION_SYSTEM_PROMPT},
@@ -46,12 +46,12 @@ async def reevaluate_email(
     try:
         logger.debug(f"🔁 Running RE-EVALUATION | attempt={attempt} | {sender_id}")
 
-        reevaluation = call_openai_safe(
+        reevaluation = call_openai.blocking(
             messages=messages,
             temperature=0.2,
             max_tokens=600,
-            response_format="json",
-            fallback_response=fallback,
+            increment=150,
+            fallback=fallback,
         )
 
         if not isinstance(reevaluation, dict):

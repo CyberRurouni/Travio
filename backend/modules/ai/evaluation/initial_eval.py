@@ -11,7 +11,7 @@ def evaluate_email(sender_id: str, subject: str, message: str) -> dict:
     Initial intent classification.
     Always returns safe JSON with guaranteed structure.
     """
-    from core import call_openai_safe
+    from core import call_openai
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
@@ -40,12 +40,12 @@ Message:
     try:
         logger.debug("🧠 Running INITIAL evaluation")
         
-        evaluation = call_openai_safe(
+        evaluation = call_openai.blocking(
             messages=messages,
             temperature=0.0,
-            max_tokens=500,  
-            response_format="json",
-            fallback_response=fallback,
+            max_tokens=500,
+            increment=100,
+            fallback=fallback,
         )
 
         # Validate structure
