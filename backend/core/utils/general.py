@@ -11,25 +11,43 @@ logger = logging.getLogger("GENERAL_UTILS")
 
 
 # =========================================
-# Generate embeddings (async-safe)
+# Generate embeddings (async-safe, retried)
 # =========================================
-async def generate_embeddings(text: str) -> List[float]:
+async def generate_embeddings(text: str, attempts: int = 3, delay: float = 1.0) -> List[float]:
     """
     Get embedding vector for given text using OpenAI embeddings asynchronously.
-    """
-    try:
-        from core import client
 
-        # Use asyncio.to_thread in case client is sync
-        resp = await asyncio.to_thread(
-            client.embeddings.create,
-            model="openai/text-embedding-3-small",
-            input=text,
-        )
-        return resp.data[0].embedding
-    except Exception as e:
-        logger.exception(f"💥 generate_embeddings failed: {e}")
-        return []
+    Tries up to `attempts` times (small backoff between tries) before giving up.
+    Returns an empty list only after every attempt has failed — callers treat
+    an empty list as a failure and must abort rather than proceed.
+    """
+    import time as _time
+
+    for attempt in range(attempts):
+        try:
+            from core import client
+
+            # Use asyncio.to_thread in case client is sync
+            resp = await asyncio.to_thread(
+                client.embeddings.create,
+                model="openai/text-embedding-3-small",
+                input=text,
+            )
+            embedding = resp.data[0].embedding
+            if not embedding:
+                raise ValueError("Embedding API returned an empty vector")
+            return embedding
+        except Exception as e:
+            if attempt < attempts - 1:
+                logger.warning(
+                    f"💥 generate_embeddings attempt {attempt + 1}/{attempts} failed: {e}. Retrying..."
+                )
+                await asyncio.sleep(delay * (attempt + 1))
+            else:
+                logger.exception(
+                    f"💥 generate_embeddings failed after {attempts} attempts: {e}"
+                )
+    return []
 
 
 # =========================================

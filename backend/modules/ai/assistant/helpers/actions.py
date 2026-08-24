@@ -138,19 +138,27 @@ results: null""",
                             ),
                         )
                     except Exception as e:
-                        scanning = {}
+                        scanning = {
+                            "status": "error",
+                            "results": [],
+                            "message": "⚠️ Scan crashed.",
+                            "error_reason": "scan_crashed",
+                        }
                         logger.error("❌ Database scan failed: %s", e)
 
                     # 3️⃣ Log completion state
+                    scan_status = scanning.get("status", "no_results")
+                    scan_error_reason = scanning.get("error_reason", "")
                     try:
                         await assistant.session.chat_container(
                             text=f"""[STATE_UPDATE]
 action_type: database_scan
-status: success
-reason: Scan completed
+status: {scan_status}
+reason: {"Scan aborted due to internal error" if scan_status == "error" else "Scan completed"}
 context: {note}
 exclude previous ids = {extra.get("exclude_previous_ids", False)}
-results: {json.dumps(scanning, indent=2)}""",
+results: {json.dumps(scanning, indent=2)}
+scan_error_reason: {scan_error_reason}""",
                             sender="system",
                         )
                         logger.info(

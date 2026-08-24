@@ -1,4 +1,4 @@
-import logging, json
+import logging, json, re
 from .components.request import formulate_request
 from .utils import (
     format_packages,
@@ -195,6 +195,108 @@ NOW GENERATE SQL
     return sql
 
 
+# =========================================================
+# 🔒 SQL VALIDATOR
+# =========================================================
+# The LLM generates the SQL string. Before it is ever executed via
+# query_sql (SECURITY INVOKER) we validate it so only a single, read-only
+# SELECT against the single allowed table is ever run. This is the
+# logic-level wall; the read-only role/privileges are the privilege wall.
+# A validation failure aborts the scan and surfaces an internal-error
+# status to the assistant (the model usually generated something hostile
+# or malformed — the assistant handles the messaging).
+# =========================================================
+
+# Only these tables may appear in the SQL. Documents that legitimately get
+# queried by the recommendation flow are whitelisted.
+ALLOWED_SQL_TABLES = {"agency_packages"}
+
+# Keywords that are never valid in a read-only package lookup. Match on
+# whole words to avoid false positives like "update" inside a string.
+_DANGEROUS_KEYWORDS = [
+    "insert",
+    "update",
+    "delete",
+    "drop",
+    "alter",
+    "truncate",
+    "create",
+    "grant",
+    "revoke",
+    "comment",
+    "copy",
+    "vacuum",
+    "reindex",
+    "cluster",
+    "declare",
+    "execute",
+    "call",
+    "prepare",
+    "select into",
+    "pg_sleep",
+    "lo_",
+    "oid",
+    "pg_",
+    "information_schema",
+    "pg_catalog",
+    "union",
+    "except",
+    "intersect",
+]
+
+_DANGEROUS_KEYWORD_RE = re.compile(
+    r"(?i)\b(" + "|".join(re.escape(k) for k in _DANGEROUS_KEYWORDS) + r")\b"
+)
+
+
+def _validate_table_references(sql: str) -> bool:
+    """Ensure every FROM/JOIN target is in the allowed table set."""
+
+    # Find FROM/JOIN ... <table> occurrences (rough but effective at the
+    # statement level for a read-only guard).
+    for m in re.finditer(r"\b(?:from|join)\s+([\w.]+)\b", sql, re.IGNORECASE):
+        table = m.group(1).lower().split(".")[-1]
+        if table not in ALLOWED_SQL_TABLES:
+            return False
+    return True
+
+
+def validate_generated_sql(sql: str) -> tuple[bool, str]:
+    """
+    Validate a generated SQL string before execution.
+
+    Returns (is_safe, reason). When unsafe, `reason` explains why the SQL
+    was rejected so the assistant can be told what happened.
+    """
+    if not sql or not isinstance(sql, str):
+        return False, "empty_sql"
+
+    trimmed = sql.strip()
+    lower = trimmed.lower()
+
+    # 1. Must be a single SELECT statement.
+    if not lower.startswith("select"):
+        return False, "not_a_select"
+
+    # 2. No statement separators — must be exactly one statement.
+    if ";" in trimmed:
+        return False, "multiple_statements"
+
+    # 3. No comment markers (LLM could try to smuggle a quote or comment).
+    if "--" in trimmed or "/*" in trimmed or "*/" in trimmed:
+        return False, "contains_comment"
+
+    # 4. No dangerous keywords / functions / system catalogs.
+    if _DANGEROUS_KEYWORD_RE.search(trimmed):
+        return False, "dangerous_keyword"
+
+    # 5. Only allowed tables referenced.
+    if not _validate_table_references(trimmed):
+        return False, "disallowed_table"
+
+    return True, ""
+
+
 import logging, json
 
 logger = logging.getLogger("AI_TRAVEL")
@@ -205,8 +307,21 @@ async def smart_package_search(
     user_request: dict,
     session_id: str,
     agency_prospect_id: str,
-) -> list[dict]:
-    results = []
+) -> dict:
+    """
+    Search agency packages for a prospect, with safety guards.
+
+    Returns a status dict:
+      {"status": "ok"|"no_results"|"error", "results": [...], "reason": "..."}
+    - "ok"         → results is a non-empty, safe result set.
+    - "no_results" → the query ran safely but matched nothing.
+    - "error"      → an internal/reliability or safety failure (bad embedding,
+                     rejected SQL, execution failure). "reason" explains it and
+                     is meant to reach the assistant so it can tell the
+                     prospect to retry later (rather than falsely claiming no
+                     packages exist).
+    """
+    default = {"status": "error", "results": [], "reason": "unexpected_error"}
     exclude_previous_ids = user_request.get("exclude_previous_ids", False)
     try:
         logger.info(
@@ -222,37 +337,56 @@ async def smart_package_search(
             logger.info("💡 AI generated SQL (with placeholders):\n%s", sql)
         except Exception as e:
             logger.error("❌ Failed to generate SQL: %s", e)
-            return results
+            return {"status": "error", "results": [], "reason": "sql_generation_failed"}
 
-        # 1️⃣ Generate vector embedding for main query
-        try:
-            if "<=>" in sql:
-                logger.info(
-                    "🔗 Generating embedding for main query:\n%s",
-                    user_request.get("main_query"),
-                )
-                request_embedding = await generate_embeddings(
-                    user_request.get("main_query", "")
-                )
-                sql = sql.replace("query_embedding", f"'{request_embedding}'")
-                logger.info("✅ Main query embedding applied to SQL.")
-        except Exception as e:
-            logger.warning("⚠️ Failed to generate main query embedding: %s", e)
+        # 🔒 Validate the generated SQL before any execution.
+        is_safe, reason = validate_generated_sql(sql)
+        if not is_safe:
+            logger.warning(
+                f"🚫 Generated SQL rejected by validator | reason={reason} | sql={sql}"
+            )
+            return {"status": "error", "results": [], "reason": f"sql_rejected:{reason}"}
 
-        # 2️⃣ Vector embedding for vague exclusions
-        try:
-            if user_request.get("vague_exclusion") and "exclude_embedding" in sql:
-                logger.info(
-                    "🔗 Generating embedding for vague exclusion:\n%s",
-                    user_request["vague_exclusion"],
+        # 1️⃣ Generate vector embedding for main query (required)
+        request_embedding = None
+        if "<=>" in sql:
+            logger.info(
+                "🔗 Generating embedding for main query:\n%s",
+                user_request.get("main_query"),
+            )
+            request_embedding = await generate_embeddings(
+                user_request.get("main_query", "")
+            )
+            if not request_embedding:
+                logger.error("❌ Main query embedding missing after retries — aborting.")
+                return {
+                    "status": "error",
+                    "results": [],
+                    "reason": "embedding_generation_failed",
+                }
+            sql = sql.replace("query_embedding", f"'{request_embedding}'")
+            logger.info("✅ Main query embedding applied to SQL.")
+
+        # 2️⃣ Vector embedding for vague exclusions (required if present in SQL)
+        if user_request.get("vague_exclusion") and "exclude_embedding" in sql:
+            logger.info(
+                "🔗 Generating embedding for vague exclusion:\n%s",
+                user_request["vague_exclusion"],
+            )
+            exclude_embedding = await generate_embeddings(
+                user_request["vague_exclusion"]
+            )
+            if not exclude_embedding:
+                logger.error(
+                    "❌ Vague-exclusion embedding missing after retries — aborting."
                 )
-                exclude_embedding = await generate_embeddings(
-                    user_request["vague_exclusion"]
-                )
-                sql = sql.replace("exclude_embedding", f"'{exclude_embedding}'")
-                logger.info("✅ Vague exclusion embedding applied to SQL.")
-        except Exception as e:
-            logger.warning("⚠️ Failed to generate exclusion embedding: %s", e)
+                return {
+                    "status": "error",
+                    "results": [],
+                    "reason": "embedding_generation_failed",
+                }
+            sql = sql.replace("exclude_embedding", f"'{exclude_embedding}'")
+            logger.info("✅ Vague exclusion embedding applied to SQL.")
 
         # 3️⃣ Handle exclude_previous_ids
         try:
@@ -293,6 +427,7 @@ async def smart_package_search(
             logger.info("✅ SQL query executed. Number of results: %d", len(results))
         except Exception as e:
             logger.error("❌ SQL execution failed: %s", e)
+            return {"status": "error", "results": [], "reason": "sql_execution_failed"}
 
         # 5️⃣ Cache new IDs
         try:
@@ -312,10 +447,13 @@ async def smart_package_search(
             "🧠 Smart package search completed for prospect %s", agency_prospect_id
         )
 
+        if not results:
+            return {"status": "no_results", "results": [], "reason": ""}
+        return {"status": "ok", "results": results, "reason": ""}
+
     except Exception as e:
         logger.critical("❌ Unexpected error in smart_package_search: %s", e)
-
-    return results
+        return default
 
 
 async def db_scanning(
@@ -324,12 +462,24 @@ async def db_scanning(
     """
     Main function to scan database packages based on a user note, format results,
     and optionally insert recommendation events and items into memory.
-    
+
+    Returns a status dict:
+      {"status": "ok"|"no_results"|"error", "message": ..., "results": [...],
+       "error_reason": "..."}
+    The status is threaded to the assistant so an internal/reliability failure
+    ("error") is NOT falsely reported as "no packages found" — the assistant is
+    told to ask the prospect to retry later instead.
+
     Features:
         - Avoids inserting duplicate recommendation events if exclude_previous_ids=True.
         - Logs every major step and warning/error.
     """
-    response = {"results": [], "message": "⚠️ Scan failed."}
+    response = {
+        "status": "error",
+        "results": [],
+        "message": "⚠️ Scan failed.",
+        "error_reason": "unexpected_error",
+    }
 
     try:
         logger.info("🔍 Starting DB scan | Prospect=%s", agency_prospect_id)
@@ -347,17 +497,35 @@ async def db_scanning(
             search_request = {}
 
         # ------------------------------
-        # Step 2: Fetch raw search results
+        # Step 2: Fetch raw search results (with safety/reliability guards)
         # ------------------------------
         try:
-            raw_search_results = await smart_package_search(
+            search_result = await smart_package_search(
                 user_request=search_request,
                 session_id=session_id,
                 agency_prospect_id=agency_prospect_id,
             )
         except Exception as e:
             logger.error("❌ Smart package search failed: %s", e)
-            raw_search_results = []
+            search_result = {
+                "status": "error",
+                "results": [],
+                "reason": "search_crashed",
+            }
+
+        # ── Abort on internal/safety failure, distinct from "no results" ──
+        if search_result.get("status") == "error":
+            reason = search_result.get("reason", "unknown")
+            logger.error("🚫 DB scan aborted | reason=%s", reason)
+            return {
+                "status": "error",
+                "results": [],
+                "message": "⚠️ We hit an internal error while searching. Please try again later.",
+                "error_reason": reason,
+            }
+
+        raw_search_results = search_result.get("results", [])
+        no_results = search_result.get("status") == "no_results"
 
         # ------------------------------
         # Step 3: Format results for display and memory insertion
@@ -411,13 +579,16 @@ async def db_scanning(
         # ------------------------------
         try:
             num_packages = len(raw_search_results)
-            if num_packages == 0:
+            if no_results or num_packages == 0:
+                response["status"] = "no_results"
                 response["message"] = "⚠️ No packages found matching the criteria."
                 logger.warning(response["message"])
             elif num_packages == 1:
+                response["status"] = "ok"
                 response["message"] = "✅ 1 package found matching the criteria."
                 logger.info(response["message"])
             else:
+                response["status"] = "ok"
                 response["message"] = f"✅ {num_packages} packages found matching the criteria."
                 logger.info(response["message"])
 

@@ -14,7 +14,7 @@ create extension if not exists pg_cron;
    Stores agencies using the system.
    Minimal info to avoid duplication.
    ========================================================= */
-CREATE TABLE agencies (
+CREATE TABLE IF NOT EXISTS agencies (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL,
     issued_email TEXT,         -- email used for identification
@@ -30,7 +30,7 @@ CREATE TABLE agencies (
    ---------------------------------------------------------
    Subscription plans (logical only).
    ========================================================= */
-CREATE TABLE plans (
+CREATE TABLE IF NOT EXISTS plans (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT NOT NULL
 );
@@ -43,7 +43,7 @@ CREATE TABLE plans (
    Join table: which plans an agency currently has active.
    Prevents duplicating package definitions.
    ========================================================= */
-CREATE TABLE active_packages (
+CREATE TABLE IF NOT EXISTS active_packages (
     agency_id UUID NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
     plan_id UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
     PRIMARY KEY (agency_id, plan_id)
@@ -56,7 +56,7 @@ CREATE TABLE active_packages (
    ---------------------------------------------------------
    Travel packages offered by agencies.
    ========================================================= */
-CREATE TABLE agency_packages (
+CREATE TABLE IF NOT EXISTS agency_packages (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
 
     agency_id UUID NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
@@ -98,7 +98,7 @@ CREATE TABLE agency_packages (
    Every person who has ever contacted an agency.
    Note: No agency_id here! Prospects are global entities.
    ========================================================= */
-CREATE TABLE prospects (
+CREATE TABLE IF NOT EXISTS prospects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name TEXT,
     psyche_eval TEXT,
@@ -114,7 +114,7 @@ CREATE TABLE prospects (
     Links prospects to the agencies they've contacted.
     This enables many-to-many relationship.
    ========================================================= */
-CREATE TABLE agency_prospects (
+CREATE TABLE IF NOT EXISTS agency_prospects (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Optional, could use composite PK
     agency_id UUID NOT NULL REFERENCES agencies(id) ON DELETE CASCADE,
     prospect_id UUID NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
@@ -131,7 +131,7 @@ CREATE TABLE agency_prospects (
    All channels/identifiers used by a prospect.
    Still per-prospect (global to the person).
    ========================================================= */
-CREATE TABLE contact_methods (
+CREATE TABLE IF NOT EXISTS contact_methods (
     prospect_id UUID NOT NULL REFERENCES prospects(id) ON DELETE CASCADE,
     channel_type TEXT NOT NULL,
     identifier_hash TEXT NOT NULL,
@@ -147,7 +147,7 @@ CREATE TABLE contact_methods (
    Now linked through agency_prospects to know which agency
    context the presence is for.
    ========================================================= */
-CREATE TABLE prospect_presence (
+CREATE TABLE IF NOT EXISTS prospect_presence (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- Need ID since composite PK changed
     agency_prospect_id UUID NOT NULL REFERENCES agency_prospects(id) ON DELETE CASCADE,
     channel_type TEXT NOT NULL,
@@ -163,7 +163,7 @@ CREATE TABLE prospect_presence (
    ---------------------------------------------------------
    Now linked through agency_prospects to maintain agency context.
    ========================================================= */
-CREATE TABLE sessions (
+CREATE TABLE IF NOT EXISTS sessions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agency_prospect_id UUID NOT NULL REFERENCES agency_prospects(id) ON DELETE CASCADE,
     intent TEXT,                   -- 'browsing', 'inquiring', 'ready_to_book', etc
@@ -186,7 +186,7 @@ CREATE TABLE sessions (
    ---------------------------------------------------------
    Now linked through agency_prospects.
    ========================================================= */
-CREATE TABLE prospect_interests (
+CREATE TABLE IF NOT EXISTS prospect_interests (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     agency_prospect_id UUID NOT NULL REFERENCES agency_prospects(id) ON DELETE CASCADE,
     agency_package UUID REFERENCES agency_packages(id),
@@ -204,7 +204,7 @@ CREATE TABLE prospect_interests (
    Message-level storage.
    Preserves order and sender for exact replay/training.
    ========================================================= */
-CREATE TABLE chats (
+CREATE TABLE IF NOT EXISTS chats (
     session_id UUID NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     msg_sequence INT NOT NULL,
     sender TEXT NOT NULL,               -- prospect | assistant
@@ -219,7 +219,7 @@ CREATE TABLE chats (
    ---------------------------------------------------------
     Logs every time a recommendation is made.
    ========================================================= */
-CREATE TABLE recommendation_events (
+CREATE TABLE IF NOT EXISTS recommendation_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     session_id UUID NOT NULL
         REFERENCES sessions(id)
@@ -236,7 +236,7 @@ CREATE TABLE recommendation_events (
    ---------------------------------------------------------
     Stores each recommended package for an event.
    ========================================================= */
-CREATE TABLE recommendation_items (
+CREATE TABLE IF NOT EXISTS recommendation_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     recommendation_event_id UUID NOT NULL
         REFERENCES recommendation_events(id)
@@ -257,7 +257,7 @@ CREATE TABLE recommendation_items (
    ---------------------------------------------------------
    Read-optimized collation for fast querying.
    ========================================================= */
-CREATE VIEW prospect_snapshot AS
+CREATE OR REPLACE VIEW prospect_snapshot AS
 SELECT
     p.id AS prospect_id,
     ap.agency_id,
@@ -286,13 +286,13 @@ LEFT JOIN prospect_presence pp ON pp.agency_prospect_id = ap.id;
 
 
 /* ---------- Agencies ---------- */
-CREATE INDEX idx_agencies_email_name
+CREATE INDEX IF NOT EXISTS idx_agencies_email_name
 ON agencies (issued_email, name);
 
-CREATE INDEX idx_agencies_agent_email
+CREATE INDEX IF NOT EXISTS idx_agencies_agent_email
 ON agencies (agent_email);
 
-CREATE INDEX idx_agencies_created_at
+CREATE INDEX IF NOT EXISTS idx_agencies_created_at
 ON agencies (created_at);
 
 
@@ -305,89 +305,89 @@ ON agencies (created_at);
 
 
 /* ---------- Agency Packages ---------- */
-CREATE INDEX idx_packages_agency_ideal_for_active
+CREATE INDEX IF NOT EXISTS idx_packages_agency_ideal_for_active
 ON agency_packages
 USING GIN (ideal_for)
 WHERE is_active = true;
 
-CREATE INDEX idx_packages_agency_category_destination_active
+CREATE INDEX IF NOT EXISTS idx_packages_agency_category_destination_active
 ON agency_packages (agency_id, category, destination)
 WHERE is_active = true;
 
-CREATE INDEX idx_packages_agency_price_active
+CREATE INDEX IF NOT EXISTS idx_packages_agency_price_active
 ON agency_packages (agency_id, price_amount)
 WHERE is_active = true
   AND price_amount IS NOT NULL;
 
-CREATE INDEX idx_packages_agency_created_active
+CREATE INDEX IF NOT EXISTS idx_packages_agency_created_active
 ON agency_packages (agency_id, created_at DESC)
 WHERE is_active = true;
 
 
 /* ---------- Agency Prospects ---------- */
-CREATE UNIQUE INDEX idx_agency_prospects_agency_prospect
+CREATE UNIQUE INDEX IF NOT EXISTS idx_agency_prospects_agency_prospect
 ON agency_prospects (agency_id, prospect_id);
 
 
 /* ---------- Contact Methods ---------- */
-CREATE UNIQUE INDEX idx_contact_methods_channel_identifier_hash
+CREATE UNIQUE INDEX IF NOT EXISTS idx_contact_methods_channel_identifier_hash
 ON contact_methods (channel_type, identifier_hash);
 
-CREATE INDEX idx_contact_methods_prospect_id
+CREATE INDEX IF NOT EXISTS idx_contact_methods_prospect_id
 ON contact_methods (prospect_id);
 
 
 /* ---------- Prospect Presence ---------- */
-CREATE INDEX idx_presence_channel_identifier
+CREATE INDEX IF NOT EXISTS idx_presence_channel_identifier
 ON prospect_presence (channel_type, raw_identifier);
 
-CREATE INDEX idx_presence_prospect_id
+CREATE INDEX IF NOT EXISTS idx_presence_prospect_id
 ON prospect_presence (agency_prospect_id);
 
-CREATE INDEX idx_presence_last_contacted_at
+CREATE INDEX IF NOT EXISTS idx_presence_last_contacted_at
 ON prospect_presence (last_contacted_at);
 
-CREATE UNIQUE INDEX prospect_presence_unique_channel
+CREATE UNIQUE INDEX IF NOT EXISTS prospect_presence_unique_channel
 ON prospect_presence (agency_prospect_id, channel_type);
 
 
 /* ---------- Sessions ---------- */
-CREATE UNIQUE INDEX idx_sessions_active_prospect
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_active_prospect
 ON sessions (agency_prospect_id)
 WHERE ended_at IS NULL;
 
-CREATE INDEX idx_sessions_prospect_intent
+CREATE INDEX IF NOT EXISTS idx_sessions_prospect_intent
 ON sessions (agency_prospect_id, intent);
 
-CREATE INDEX idx_sessions_initiated_at_desc
+CREATE INDEX IF NOT EXISTS idx_sessions_initiated_at_desc
 ON sessions (initiated_at DESC);
 
 
 /* ---------- Prospect Interests ---------- */
 -- Note: The original had a reference to agency_id which doesn't exist in prospect_interests
 -- I've removed that invalid index
-CREATE INDEX idx_interests_created_at
+CREATE INDEX IF NOT EXISTS idx_interests_created_at
 ON prospect_interests (created_at);
 
-CREATE INDEX idx_interests_session_id
+CREATE INDEX IF NOT EXISTS idx_interests_session_id
 ON prospect_interests (session_id);
 
-CREATE INDEX idx_interests_agency_prospect
+CREATE INDEX IF NOT EXISTS idx_interests_agency_prospect
 ON prospect_interests (agency_prospect_id);
 
 
 /* ---------- Chats ---------- */
-CREATE INDEX idx_chats_session_id
+CREATE INDEX IF NOT EXISTS idx_chats_session_id
 ON chats (session_id);
 
 
 /* ---------- Recommendation Events ---------- */
-CREATE INDEX idx_re_events_session_created
+CREATE INDEX IF NOT EXISTS idx_re_events_session_created
 ON recommendation_events (session_id, created_at DESC);
 
 
 /* ---------- Recommendation Items ---------- */
-CREATE INDEX idx_re_items_session_created
+CREATE INDEX IF NOT EXISTS idx_re_items_session_created
 ON recommendation_items (session_id, created_at DESC);
 
 /* =========================================================
@@ -591,6 +591,7 @@ BEGIN
 END;
 $$;
 
+DROP TRIGGER IF EXISTS auto_incr_msg_seq_trigger ON chats;
 CREATE TRIGGER auto_incr_msg_seq_trigger
 BEFORE INSERT ON chats
 FOR EACH ROW
@@ -663,6 +664,11 @@ END;
 $$;
 
 /* ----------- Generic SQL Query Executor ----------- */
+/* SECURITY INVOKER: the function runs with the CALLER's privileges, not the
+   owner's. This means a malicious statement can only ever touch tables the
+   caller (the app role) already has rights to — together with the Python-side
+   SQL validator and a read-only role grant, it cannot write, drop, or escape
+   to other schemas the role cannot see. */
 CREATE OR REPLACE FUNCTION public.query_sql(sql text)
 RETURNS SETOF jsonb AS $$
 BEGIN
@@ -671,7 +677,22 @@ BEGIN
         sql
     );
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY INVOKER;
+
+
+/* ----------- Read-only role for recommendation queries ----------- */
+/* Defense-in-depth: even if the SQL validator were bypassed, any query run
+   through query_sql executes as the caller. The application connects with a
+   role (e.g. service_role / anon) that is GRANTed only SELECT on the exact
+   tables the recommendation flow needs — no INSERT/UPDATE/DELETE, no DDL.
+   So the worst case is reading the whitelisted tables, never writing.
+
+   Grant SELECT on the recommendation/query tables to the roles the app uses.
+   (Adjust role names to match your Supabase project if they differ.) */
+GRANT SELECT ON TABLE public.agency_packages TO anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.recommendation_events TO anon, authenticated, service_role;
+GRANT SELECT ON TABLE public.recommendation_items TO anon, authenticated, service_role;
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
 
 
 /* ----------- Create Vault Secret ----------- */
@@ -715,15 +736,17 @@ $$;
 --  CRON JOBS
 -- ========================================================================
 
--- Schedule prune_stale_presence to run daily at 2am
-select cron.schedule(
+-- Schedule prune_stale_presence to run daily at 2am (idempotent)
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'prune-stale-presence';
+SELECT cron.schedule(
   'prune-stale-presence',
   '0 2 * * *',
   $$ select prune_stale_presence(); $$
 );
 
--- Schedule end_stale_sessions to run daily at 3am
-select cron.schedule(
+-- Schedule end_stale_sessions to run daily at 3am (idempotent)
+SELECT cron.unschedule(jobid) FROM cron.job WHERE jobname = 'end-stale-sessions';
+SELECT cron.schedule(
   'end-stale-sessions',
   '0 3 * * *',
   $$ select end_stale_sessions(); $$
@@ -745,7 +768,18 @@ BEGIN
     END IF;
 END $$;
 
-ALTER PUBLICATION supabase_realtime
-ADD TABLE public.prospect_presence;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_publication_tables
+        WHERE pubname = 'supabase_realtime'
+          AND schemaname = 'public'
+          AND tablename = 'prospect_presence'
+    ) THEN
+        ALTER PUBLICATION supabase_realtime
+        ADD TABLE public.prospect_presence;
+    END IF;
+END $$;
 
 

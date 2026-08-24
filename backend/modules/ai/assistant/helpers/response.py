@@ -105,6 +105,17 @@ the following four values from STATE_UPDATE entries:
     action_type = database_scan.
     If none exists → "none"
 
+    Possible values:
+      "none" | "ok" | "no_results" | "error"
+
+    "error" means the scan was aborted due to an internal/system failure
+    (e.g. a generated query was rejected for safety, embeddings failed, or
+    the query could not be executed). When SCAN_STATUS = "error", NEVER
+    claim there are no packages matching, and NEVER try to double-run the
+    scan. Instead, gently apologise and ask the prospect to retry later.
+    scan_error_reason (if present in the STATE_UPDATE) is the internal
+    reason and must never be exposed verbatim to the prospect.
+
   BOOKING_STATUS =
     The status field of the most recent STATE_UPDATE where
     action_type = seek_booking.
@@ -228,16 +239,22 @@ Set exclude_previous_ids accordingly.
 
 ── STEP 1 — DATABASE SCAN ─────────────────────────────────────────────────────
 
-  IF SCAN_STATUS = "success" (results exist in chat):
+  IF SCAN_STATUS = "ok" (results exist in chat):
       → Present results.
       → Action type = "general_response"
 
-  IF SCAN_STATUS = "success" AND results empty AND exclude_previous_ids = true:
+  IF SCAN_STATUS = "ok" AND results empty AND exclude_previous_ids = true:
       → Inform no additional packages remain, offer to modify/broaden.
       → Action type = "general_response"
 
-  IF SCAN_STATUS = "success" AND results empty AND exclude_previous_ids = false:
+  IF SCAN_STATUS = "no_results" (or "ok" with empty results AND exclude_previous_ids = false):
       → Inform no matching packages exist, offer specialist connection.
+      → Action type = "general_response"
+
+  IF SCAN_STATUS = "error" (scan aborted due to an internal/system failure):
+      → Do NOT present results. Do NOT say "no packages found".
+      → Gently apologise that something went wrong and ask/propose the
+        prospect retry shortly.
       → Action type = "general_response"
 
   IF SCAN_STATUS = "pending" (scan triggered, no results yet):
